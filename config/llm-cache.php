@@ -93,6 +93,13 @@ return [
     |--------------------------------------------------------------------------
     | Provider driver options
     |--------------------------------------------------------------------------
+    |
+    | Every HTTP-backed provider is bounded by connect/response timeouts and a
+    | small retry budget so a slow or hung embedding endpoint can never stall the
+    | request thread — fail-open only protects against *thrown* failures, and an
+    | unbounded hang throws nothing. Seconds; shared defaults, overridable per
+    | provider.
+    |
     */
 
     'providers' => [
@@ -100,16 +107,25 @@ return [
         'openai' => [
             'key' => env('OPENAI_API_KEY'),
             'model' => env('LLM_CACHE_OPENAI_MODEL', 'text-embedding-3-small'),
+            'connect_timeout' => (int) env('LLM_CACHE_HTTP_CONNECT_TIMEOUT', 3),
+            'timeout' => (int) env('LLM_CACHE_HTTP_TIMEOUT', 10),
+            'retries' => (int) env('LLM_CACHE_HTTP_RETRIES', 1),
         ],
 
         'voyage' => [
             'key' => env('VOYAGE_API_KEY'),
             'model' => env('LLM_CACHE_VOYAGE_MODEL', 'voyage-3'),
+            'connect_timeout' => (int) env('LLM_CACHE_HTTP_CONNECT_TIMEOUT', 3),
+            'timeout' => (int) env('LLM_CACHE_HTTP_TIMEOUT', 10),
+            'retries' => (int) env('LLM_CACHE_HTTP_RETRIES', 1),
         ],
 
         'http' => [
             'endpoint' => env('LLM_CACHE_HTTP_ENDPOINT'),
             'dimensions' => (int) env('LLM_CACHE_HTTP_DIMENSIONS', 1536),
+            'connect_timeout' => (int) env('LLM_CACHE_HTTP_CONNECT_TIMEOUT', 3),
+            'timeout' => (int) env('LLM_CACHE_HTTP_TIMEOUT', 10),
+            'retries' => (int) env('LLM_CACHE_HTTP_RETRIES', 1),
         ],
 
     ],
