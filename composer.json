@@ -1,0 +1,51 @@
+{
+    "name": "yegoragapov/laravel-llm-cache",
+    "description": "Semantic caching layer for LLM calls in Laravel — matches prompts by embedding similarity so paraphrased-but-equivalent requests reuse a cached response.",
+    "keywords": ["laravel", "llm", "cache", "semantic", "embeddings", "pgvector", "ai"],
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Yegor Agapov"
+        }
+    ],
+    "require": {
+        "php": "^8.2",
+        "illuminate/contracts": "^11.0",
+        "illuminate/support": "^11.0",
+        "nesbot/carbon": "^2.72 || ^3.0"
+    },
+    "require-dev": {
+        "orchestra/testbench": "^9.0",
+        "pestphp/pest": "^3.0",
+        "pestphp/pest-plugin-laravel": "^3.0",
+        "phpstan/phpstan": "^1.11"
+    },
+    "autoload": {
+        "psr-4": {
+            "Yegoragapov\\LlmCache\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Yegoragapov\\LlmCache\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Yegoragapov\\LlmCache\\LlmCacheServiceProvider"
+            ],
+            "aliases": {
+                "SemanticCache": "Yegoragapov\\LlmCache\\Facades\\SemanticCache"
+            }
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}
