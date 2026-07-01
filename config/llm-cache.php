@@ -146,6 +146,12 @@ return [
             // (correct even when the migration runs on an empty table) and has
             // higher recall than ivfflat, whose k-means partitions are degenerate
             // until rebuilt on representative data.
+            //
+            // UPGRADE NOTE: the default changed from ivfflat to hnsw. An existing
+            // install that ran the old migration has a physical ivfflat index; to
+            // adopt hnsw, drop and recreate the index (or re-run the migration).
+            // To keep ivfflat, pin LLM_CACHE_ANN_INDEX=ivfflat so the query-time
+            // tuning targets ivfflat.probes rather than hnsw.ef_search.
             'index' => env('LLM_CACHE_ANN_INDEX', 'hnsw'), // hnsw | ivfflat
 
             // Build-time index parameters (used by the migration).
@@ -157,16 +163,26 @@ return [
                 'lists' => (int) env('LLM_CACHE_IVFFLAT_LISTS', 100),
             ],
 
-            // Query-time recall knobs, applied per search(). Higher = better
-            // recall (fewer false cache misses), slightly higher latency. Without
-            // these, filtered KNN on a scoped table silently under-recalls.
+            // Query-time recall knobs, applied per search() via SET LOCAL. Higher
+            // = better recall (fewer false cache misses), slightly higher latency.
+            // Without these, filtered KNN on a scoped table silently under-recalls.
             'ef_search' => (int) env('LLM_CACHE_HNSW_EF_SEARCH', 64), // hnsw
             'probes' => (int) env('LLM_CACHE_IVFFLAT_PROBES', 8),     // ivfflat
+
+            // Optional (pgvector 0.8+): keep scanning the index until the
+            // scope/expiry filter is satisfied — the real cure for false misses
+            // on a highly selective scope. Empty = off.
+            // One of: '', 'strict_order', 'relaxed_order', 'on'.
+            'iterative_scan' => env('LLM_CACHE_ITERATIVE_SCAN', ''),
         ],
 
         'redis' => [
             'connection' => env('LLM_CACHE_REDIS_CONNECTION', 'default'),
-            'index' => env('LLM_CACHE_REDIS_INDEX', 'llm_cache_idx'),
+            // Index name is versioned (_v2): the CASESENSITIVE scope tag is a
+            // schema change, and FT.CREATE is a no-op if the old index already
+            // exists. A fresh name lets the corrected schema build automatically;
+            // the old index can be dropped once traffic has moved over.
+            'index' => env('LLM_CACHE_REDIS_INDEX', 'llm_cache_idx_v2'),
             'prefix' => env('LLM_CACHE_REDIS_PREFIX', 'llm_cache:'),
             'algorithm' => env('LLM_CACHE_REDIS_ALGO', 'FLAT'), // FLAT | HNSW
         ],
