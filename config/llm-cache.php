@@ -141,7 +141,27 @@ return [
         'pgvector' => [
             'connection' => env('LLM_CACHE_DB_CONNECTION', null),
             'table' => 'llm_cache_entries',
-            'index' => env('LLM_CACHE_ANN_INDEX', 'ivfflat'), // ivfflat | hnsw
+
+            // ANN index method. hnsw is the default: it builds incrementally
+            // (correct even when the migration runs on an empty table) and has
+            // higher recall than ivfflat, whose k-means partitions are degenerate
+            // until rebuilt on representative data.
+            'index' => env('LLM_CACHE_ANN_INDEX', 'hnsw'), // hnsw | ivfflat
+
+            // Build-time index parameters (used by the migration).
+            'hnsw' => [
+                'm' => (int) env('LLM_CACHE_HNSW_M', 16),
+                'ef_construction' => (int) env('LLM_CACHE_HNSW_EF_CONSTRUCTION', 64),
+            ],
+            'ivfflat' => [
+                'lists' => (int) env('LLM_CACHE_IVFFLAT_LISTS', 100),
+            ],
+
+            // Query-time recall knobs, applied per search(). Higher = better
+            // recall (fewer false cache misses), slightly higher latency. Without
+            // these, filtered KNN on a scoped table silently under-recalls.
+            'ef_search' => (int) env('LLM_CACHE_HNSW_EF_SEARCH', 64), // hnsw
+            'probes' => (int) env('LLM_CACHE_IVFFLAT_PROBES', 8),     // ivfflat
         ],
 
         'redis' => [
