@@ -118,7 +118,13 @@ interface VectorStore
 }
 ```
 
-Built-in drivers: `pgvector` (flagship), `array` (in-memory, tests).
+Built-in drivers: `pgvector` (flagship), `redis` (RediSearch KNN — second
+flagship), `array` (in-memory, tests).
+
+The `redis` driver stores each entry as a hash and searches via RediSearch
+(`FT.CREATE` / `FT.SEARCH` KNN, cosine distance) — server-side ANN like
+pgvector, on any Redis Stack / Redis 8+ with the search module. It applies the
+scope filter and cosine threshold in the query, not in PHP.
 
 `CacheHit` DTO: `response`, `similarity`, `meta`, `entryId`.
 
@@ -173,10 +179,11 @@ Behavior of `remember()`:
 ## 5. Acceptance criteria
 
 The **behavioral** criteria below (§5.1) define the `VectorStore` contract and
-MUST pass identically on BOTH the `array` and `pgvector` drivers — they assert
-*behavior*, not implementation. The `array` driver computes cosine similarity in
-PHP; `pgvector` computes it in SQL. Same observable outcome either way. Run the
-suite parameterized over both drivers.
+MUST pass identically on the `array`, `pgvector`, and `redis` drivers — they
+assert *behavior*, not implementation. The `array` driver computes cosine
+similarity in PHP; `pgvector` computes it in SQL; `redis` computes it in
+RediSearch. Same observable outcome either way. Run the suite parameterized over
+all three drivers.
 
 The **implementation** criteria (§5.2) are `pgvector`-specific and assert *how*
 the flagship driver achieves the behavior (ANN index, SQL-side filtering).
@@ -405,5 +412,4 @@ Then   both may generate — unchanged v1 behaviour.
 ## 10. Open questions / future
 
 - Multi-turn context hashing (fold a context digest into the scope or key).
-- Redis vector store driver as a second flagship.
 - Adaptive threshold tuning from observed hit/miss quality.

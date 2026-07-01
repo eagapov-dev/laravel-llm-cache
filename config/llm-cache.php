@@ -128,6 +128,13 @@ return [
             'index' => env('LLM_CACHE_ANN_INDEX', 'ivfflat'), // ivfflat | hnsw
         ],
 
+        'redis' => [
+            'connection' => env('LLM_CACHE_REDIS_CONNECTION', 'default'),
+            'index' => env('LLM_CACHE_REDIS_INDEX', 'llm_cache_idx'),
+            'prefix' => env('LLM_CACHE_REDIS_PREFIX', 'llm_cache:'),
+            'algorithm' => env('LLM_CACHE_REDIS_ALGO', 'FLAT'), // FLAT | HNSW
+        ],
+
         'array' => [
             // in-memory; no options
         ],

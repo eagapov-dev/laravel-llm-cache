@@ -19,7 +19,7 @@ use Yegoragapov\LlmCache\Tests\Support\FakeEmbeddingProvider;
 | The suite is parameterized over both via the `stores` dataset.
 */
 
-dataset('stores', ['array', 'pgvector']);
+dataset('stores', ['array', 'pgvector', 'redis']);
 
 // 16-d unit vectors chosen for controlled cosine relationships:
 //   cos(HOURS, OPEN)     = 0.98  (>= 0.95 threshold  -> HIT)
@@ -50,6 +50,10 @@ function useStore(string $store): void
         test()->markTestSkipped('pgvector driver requires a Postgres + vector test backend (LLM_CACHE_TEST_PGVECTOR=1).');
     }
 
+    if ($store === 'redis' && env('LLM_CACHE_TEST_REDIS') !== '1') {
+        test()->markTestSkipped('redis driver requires a Redis Stack (RediSearch) test backend (LLM_CACHE_TEST_REDIS=1).');
+    }
+
     config()->set('llm-cache.store', $store);
     config()->set('llm-cache.dimension', 16);
     config()->set('llm-cache.threshold', 0.95);
@@ -63,6 +67,11 @@ function useStore(string $store): void
         $migration = require __DIR__.'/../../database/migrations/2024_01_01_000000_create_llm_cache_entries_table.php';
         $migration->down();
         $migration->up();
+    }
+
+    // Clear the redis index + docs so each case starts empty.
+    if ($store === 'redis') {
+        app(VectorStore::class)->flush();
     }
 }
 
@@ -213,6 +222,25 @@ function firstEntryHits(): int
 
         return (int) \Illuminate\Support\Facades\DB::connection(is_string($connection) ? $connection : null)
             ->table('llm_cache_entries')->orderBy('id')->value('hits');
+    }
+
+    if (config('llm-cache.store') === 'redis') {
+        $conn = config('llm-cache.stores.redis.connection');
+        $prefix = (string) config('llm-cache.stores.redis.prefix');
+        $client = app('redis')->connection(is_string($conn) ? $conn : null)->client();
+        $exec = fn (array $a) => $client instanceof \Predis\Client ? $client->executeRaw($a) : $client->rawCommand(...$a);
+
+        $best = null;
+        $bestKey = null;
+        foreach ((array) $exec(['KEYS', $prefix.'*']) as $k) {
+            $id = str_replace($prefix, '', (string) $k);
+            if (ctype_digit($id) && ($best === null || (int) $id < $best)) {
+                $best = (int) $id;
+                $bestKey = (string) $k;
+            }
+        }
+
+        return $bestKey === null ? 0 : (int) $exec(['HGET', $bestKey, 'hits']);
     }
 
     /** @var object|array $entry */

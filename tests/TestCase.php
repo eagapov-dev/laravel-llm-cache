@@ -41,5 +41,16 @@ abstract class TestCase extends Orchestra
             'sslmode' => 'prefer',
         ]);
         $config->set('llm-cache.stores.pgvector.connection', 'pgvector');
+
+        // Redis Stack (RediSearch) backend for the redis driver. Only exercised
+        // when LLM_CACHE_TEST_REDIS=1; harmless otherwise.
+        $config->set('database.redis.client', 'predis');
+        $config->set('database.redis.options.prefix', '');
+        $config->set('database.redis.llmcache', [
+            'host' => env('LLM_CACHE_REDIS_HOST', '127.0.0.1'),
+            'port' => (int) env('LLM_CACHE_REDIS_PORT', 56379),
+            'database' => 0,
+        ]);
+        $config->set('llm-cache.stores.redis.connection', 'llmcache');
     }
 }

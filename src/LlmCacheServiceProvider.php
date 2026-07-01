@@ -16,6 +16,7 @@ use Yegoragapov\LlmCache\Providers\OpenAiProvider;
 use Yegoragapov\LlmCache\Providers\VoyageProvider;
 use Yegoragapov\LlmCache\Stores\ArrayStore;
 use Yegoragapov\LlmCache\Stores\PgvectorStore;
+use Yegoragapov\LlmCache\Stores\RedisStore;
 
 class LlmCacheServiceProvider extends ServiceProvider
 {
@@ -47,6 +48,12 @@ class LlmCacheServiceProvider extends ServiceProvider
                 'pgvector' => new PgvectorStore(
                     $app['db'],
                     (array) $app['config']->get('llm-cache.stores.pgvector', []),
+                    $dimension,
+                    $providerName,
+                ),
+                'redis' => new RedisStore(
+                    $app['redis'],
+                    (array) $app['config']->get('llm-cache.stores.redis', []),
                     $dimension,
                     $providerName,
                 ),

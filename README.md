@@ -159,7 +159,15 @@ Write your own by implementing `Yegoragapov\LlmCache\Contracts\EmbeddingProvider
 | Driver | Similarity | Persistence | Use |
 |--------|-----------|-------------|-----|
 | `pgvector` | cosine, **in SQL** via ANN index | Postgres table | production |
+| `redis` | cosine, **in RediSearch** KNN | Redis Stack / Redis 8+ (search module) | production |
 | `array` | cosine, in PHP | in-memory (per request) | tests |
+
+The `redis` driver needs Redis with the RediSearch module (Redis Stack, or
+Redis 8+ with search). It stores each entry as a hash, creates an
+`FT.CREATE ... VECTOR ... COSINE` index lazily, and searches via `FT.SEARCH`
+KNN — the scope filter and threshold run in the query, not in PHP. Works with
+the phpredis extension or the predis client; set `LLM_CACHE_STORE=redis` and
+`stores.redis.connection`.
 
 Write your own by implementing `Yegoragapov\LlmCache\Contracts\VectorStore`.
 
@@ -380,8 +388,16 @@ docker run -d --name llmcache-pg \
 LLM_CACHE_TEST_PGVECTOR=1 ./vendor/bin/pest
 ```
 
-Without the flag, pgvector cases are skipped and the array-driver behavioural
-suite (identical assertions) runs. Quality gates:
+And the `redis` driver against a real Redis Stack:
+
+```bash
+docker run -d --name llmcache-redis -p 56379:6379 redis/redis-stack-server:latest
+
+LLM_CACHE_TEST_REDIS=1 ./vendor/bin/pest
+```
+
+Without the flags, the pgvector and redis cases are skipped and the array-driver
+behavioural suite (identical assertions) runs. Quality gates:
 
 ```bash
 ./vendor/bin/pest
