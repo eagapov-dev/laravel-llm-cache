@@ -59,6 +59,16 @@ class LlmCacheServiceProvider extends ServiceProvider
         static::$storeCreators[$name] = $factory;
     }
 
+    /**
+     * Clear all registered custom factories. Intended for test isolation, since
+     * the registries are static and otherwise persist across the process.
+     */
+    public static function flushExtensions(): void
+    {
+        static::$providerCreators = [];
+        static::$storeCreators = [];
+    }
+
     public function register(): void
     {
         $this->mergeConfigFrom(__DIR__.'/../config/llm-cache.php', 'llm-cache');
@@ -77,7 +87,9 @@ class LlmCacheServiceProvider extends ServiceProvider
                 'voyage' => new VoyageProvider($config),
                 'http' => new HttpProvider($config),
                 'null' => new NullProvider($dimension),
-                default => throw new InvalidArgumentException("Unknown embedding provider [{$name}]."),
+                // Also accept a resolvable class-string implementing the contract,
+                // so `'provider' => My\Provider::class` works with no registration.
+                default => $this->resolveCustom($app, $name, EmbeddingProvider::class, 'embedding provider'),
             };
         });
 
@@ -104,7 +116,7 @@ class LlmCacheServiceProvider extends ServiceProvider
                     $dimension,
                     $providerName,
                 ),
-                default => throw new InvalidArgumentException("Unknown vector store [{$name}]."),
+                default => $this->resolveCustom($app, $name, VectorStore::class, 'vector store'),
             };
         });
 
@@ -119,6 +131,27 @@ class LlmCacheServiceProvider extends ServiceProvider
         });
 
         $this->app->alias('llm-cache', SemanticCacheManager::class);
+    }
+
+    /**
+     * Resolve a driver given as a class-string implementing $contract, so a
+     * consumer can point config straight at their own class without registering
+     * a factory. Throws if the name is neither a built-in nor such a class.
+     *
+     * @template T of object
+     * @param  class-string<T> $contract
+     * @return T
+     */
+    protected function resolveCustom(Application $app, string $name, string $contract, string $label): object
+    {
+        if (class_exists($name) && is_a($name, $contract, true)) {
+            /** @var T $instance */
+            $instance = $app->make($name);
+
+            return $instance;
+        }
+
+        throw new InvalidArgumentException("Unknown {$label} [{$name}].");
     }
 
     public function boot(): void
@@ -158,9 +191,11 @@ class LlmCacheServiceProvider extends ServiceProvider
      * Throws at boot — never at query time. dimensions() is guaranteed cheap
      * (no network), so resolving the provider here is safe.
      *
-     * In console the mismatch is logged as a warning instead of thrown, so the
-     * very commands needed to fix it (migrate, config:clear, vendor:publish)
-     * still run rather than being bricked by the guard.
+     * For a remediation/bootstrap command (migrate, config:*, vendor:publish, …)
+     * the mismatch is logged as a warning instead of thrown, so the very commands
+     * needed to fix it still run. Everything else — web requests, queue:work,
+     * octane:start, schedule:run — fails loud at boot, since those are the paths
+     * where a silent mismatch would regenerate on every call (a cost explosion).
      */
     protected function guardDimension(): void
     {
@@ -177,12 +212,39 @@ class LlmCacheServiceProvider extends ServiceProvider
             $configured,
         );
 
-        if ($this->app->runningInConsole()) {
+        if ($this->isRemediationCommand()) {
             Log::warning('llm-cache: '.$exception->getMessage());
 
             return;
         }
 
         throw $exception;
+    }
+
+    /**
+     * True only for the bootstrap/remediation console commands that an operator
+     * needs in order to fix a bad dimension config. Deliberately excludes
+     * long-lived, request-serving console processes (queue:work, octane:start,
+     * schedule:run) so a real misconfig there still fails loud.
+     */
+    protected function isRemediationCommand(): bool
+    {
+        if (! $this->app->runningInConsole()) {
+            return false;
+        }
+
+        $command = $_SERVER['argv'][1] ?? '';
+
+        if (! is_string($command) || $command === '') {
+            return false;
+        }
+
+        foreach (['migrate', 'config:', 'vendor:publish', 'package:discover', 'optimize', 'cache:', 'key:generate'] as $prefix) {
+            if (str_starts_with($command, $prefix)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
