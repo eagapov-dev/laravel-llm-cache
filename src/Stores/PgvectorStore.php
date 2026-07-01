@@ -34,49 +34,54 @@ class PgvectorStore implements VectorStore
         $table = $this->table();
         $literal = self::vectorLiteral($vector);
 
-        // Raise ANN recall before the query. With a scope + expiry post-filter
-        // and LIMIT 1, the default probes/ef_search often return only candidates
-        // from other scopes, yielding a false miss. See config `probes`/`ef_search`.
-        $this->applyRecallTuning($connection);
+        // Wrap the whole read in one transaction so the recall-tuning SET LOCAL
+        // and the SELECT are guaranteed to run on the same backend — under
+        // transaction pooling (PgBouncer / Supabase pooler) a bare SET would
+        // otherwise land on a different connection and silently no-op.
+        return $connection->transaction(function () use ($connection, $table, $literal, $scope, $threshold): ?CacheHit {
+            // Raise ANN recall for this query. With a scope + expiry post-filter
+            // and LIMIT 1, the default probes/ef_search often return only
+            // candidates from other scopes, yielding a false miss.
+            $this->applyRecallTuning($connection);
 
-        // Single SELECT: same scope, not expired, cosine-similarity threshold
-        // filtered in SQL, ordered by ANN cosine distance, top 1.
-        $row = $connection->selectOne(
-            "SELECT id, response, meta, 1 - (embedding <=> ?::vector) AS similarity
-             FROM {$table}
-             WHERE scope = ?
-               AND (expires_at IS NULL OR expires_at > now())
-               AND 1 - (embedding <=> ?::vector) >= ?
-             ORDER BY embedding <=> ?::vector ASC
-             LIMIT 1",
-            [$literal, $scope, $literal, $threshold, $literal],
-        );
-
-        if ($row === null) {
-            return null;
-        }
-
-        /** @var array<string, mixed> $data */
-        $data = (array) $row;
-
-        // Best-effort hit counter: a failure here (read replica, transient blip)
-        // must never demote a valid hit to a miss and trigger a needless
-        // regeneration + duplicate row.
-        try {
-            $connection->update(
-                "UPDATE {$table} SET hits = hits + 1, updated_at = ? WHERE id = ?",
-                [Carbon::now()->toDateTimeString(), $data['id']],
+            // Single SELECT: same scope, not expired, cosine-similarity threshold
+            // filtered in SQL, ordered by ANN cosine distance, top 1.
+            $row = $connection->selectOne(
+                "SELECT id, response, meta, 1 - (embedding <=> ?::vector) AS similarity
+                 FROM {$table}
+                 WHERE scope = ?
+                   AND (expires_at IS NULL OR expires_at > now())
+                   AND 1 - (embedding <=> ?::vector) >= ?
+                 ORDER BY embedding <=> ?::vector ASC
+                 LIMIT 1",
+                [$literal, $scope, $literal, $threshold, $literal],
             );
-        } catch (\Throwable $e) {
-            // non-essential; swallow
-        }
 
-        return new CacheHit(
-            response: (string) $data['response'],
-            similarity: (float) $data['similarity'],
-            meta: $this->decodeMeta($data['meta'] ?? null),
-            entryId: (int) $data['id'],
-        );
+            if ($row === null) {
+                return null;
+            }
+
+            /** @var array<string, mixed> $data */
+            $data = (array) $row;
+
+            // Best-effort hit counter: a failure here (transient blip) must never
+            // demote a valid hit to a miss and trigger a needless regeneration.
+            try {
+                $connection->update(
+                    "UPDATE {$table} SET hits = hits + 1, updated_at = ? WHERE id = ?",
+                    [Carbon::now()->toDateTimeString(), $data['id']],
+                );
+            } catch (\Throwable $e) {
+                // non-essential; swallow
+            }
+
+            return new CacheHit(
+                response: (string) $data['response'],
+                similarity: (float) $data['similarity'],
+                meta: $this->decodeMeta($data['meta'] ?? null),
+                entryId: (int) $data['id'],
+            );
+        });
     }
 
     public function put(CacheEntry $entry): void
@@ -123,15 +128,34 @@ class PgvectorStore implements VectorStore
 
     public function purgeExpired(): int
     {
-        return $this->connection()->delete(
-            "DELETE FROM {$this->table()} WHERE expires_at IS NOT NULL AND expires_at <= now()",
-        );
+        $table = $this->table();
+        $connection = $this->connection();
+        $removed = 0;
+
+        // Delete in bounded batches (matching the Redis driver) so a large sweep
+        // never becomes one long-running transaction that locks the table or
+        // trips a statement timeout in the daily prune. Loops until dry.
+        do {
+            $batch = $connection->delete(
+                "DELETE FROM {$table}
+                 WHERE id IN (
+                    SELECT id FROM {$table}
+                    WHERE expires_at IS NOT NULL AND expires_at <= now()
+                    LIMIT 1000
+                 )",
+            );
+            $removed += $batch;
+        } while ($batch > 0);
+
+        return $removed;
     }
 
     /**
-     * Apply the configured query-time ANN recall setting for the active index
-     * method. Uses SET (session-scoped) so it persists for pooled connections;
-     * best-effort so an unexpected pgvector build can't break lookups.
+     * Apply the configured query-time ANN recall settings for the active index
+     * method. Uses SET LOCAL (transaction-scoped), so it is correct under
+     * transaction pooling and auto-reverts at commit; best-effort so an
+     * unexpected pgvector build can't break lookups. Must run inside a
+     * transaction (search() provides one).
      */
     protected function applyRecallTuning(ConnectionInterface $connection): void
     {
@@ -140,10 +164,20 @@ class PgvectorStore implements VectorStore
         try {
             if ($method === 'ivfflat') {
                 $probes = max(1, (int) ($this->config['probes'] ?? 8));
-                $connection->statement("SET ivfflat.probes = {$probes}");
+                $connection->statement("SET LOCAL ivfflat.probes = {$probes}");
             } else {
                 $efSearch = max(1, (int) ($this->config['ef_search'] ?? 64));
-                $connection->statement("SET hnsw.ef_search = {$efSearch}");
+                $connection->statement("SET LOCAL hnsw.ef_search = {$efSearch}");
+            }
+
+            // Optional (pgvector 0.8+): let the index keep fetching candidates
+            // until the scope/expiry filter is satisfied — the real cure for
+            // false misses on a highly selective scope. Off unless configured.
+            $iterative = $this->config['iterative_scan'] ?? null;
+
+            if (is_string($iterative) && in_array($iterative, ['strict_order', 'relaxed_order', 'on'], true)) {
+                $guc = $method === 'ivfflat' ? 'ivfflat.iterative_scan' : 'hnsw.iterative_scan';
+                $connection->statement("SET LOCAL {$guc} = '{$iterative}'");
             }
         } catch (\Throwable $e) {
             // recall tuning is an optimization; never let it break a search

@@ -261,6 +261,24 @@ php artisan llm-cache:stats --days=7 --json
 
 ---
 
+## Pruning expired entries
+
+Expired entries are excluded from lookups immediately, but they are only
+physically removed by `llm-cache:prune`. Without it the store (and its ANN
+index) grows without bound — Redis also keeps a native key TTL, but pgvector
+relies entirely on this command. Schedule it:
+
+```bash
+php artisan llm-cache:prune
+```
+
+```php
+// bootstrap/app.php (Laravel 11) or app/Console/Kernel.php
+$schedule->command('llm-cache:prune')->daily();
+```
+
+---
+
 ## Concurrent-miss deduplication (optional)
 
 Under a thundering herd — the same prompt hammered by many requests at once —

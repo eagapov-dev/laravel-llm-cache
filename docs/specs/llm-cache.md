@@ -426,7 +426,7 @@ answer. Passing a `context` isolates the entry by a digest of that context.
 turns). When present, a stable digest is folded into the scope:
 
 ```
-effectiveScope = "{scope}#ctx:{sha1(context)[:16]}"
+effectiveScope = "{scope}#ctx:{sha256(context)}"
 ```
 
 All cache operations (embed → search → put → events) use `effectiveScope`. The
@@ -435,7 +435,10 @@ matched exactly (same digest → same scope). So the same follow-up under an
 identical prior context hits, and under any different context misses.
 
 - `context` as an array is serialized deterministically (JSON, order-preserving)
-  before hashing, so the same message list yields the same digest.
+  before hashing, so the same message list yields the same digest. Invalid UTF-8
+  is substituted (never dropped) and non-JSON-encodable values fall back to
+  `serialize()`, so the digest is always stable and computing it never throws
+  (it runs before the fail-open boundary).
 - Empty/absent context (`null`, `''`, `[]`) → no folding; behaviour unchanged.
 - `SemanticCache::contextScope($scope, $context)` exposes the derivation so a
   caller can `forget()` a specific conversation's entries (`forget()` matches the

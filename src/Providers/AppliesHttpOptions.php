@@ -2,7 +2,10 @@
 
 namespace Yegoragapov\LlmCache\Providers;
 
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\RequestException;
+use Throwable;
 
 /**
  * Bounds every outbound embedding call with a connect timeout, a response
@@ -23,14 +26,38 @@ trait AppliesHttpOptions
 
         $request = $request
             ->connectTimeout($connectTimeout)
-            ->timeout($timeout);
+            ->timeout($timeout)
+            // Do NOT follow redirects: the HTTPS guard only validates the initial
+            // URL, so a 3xx to http://internal would otherwise downgrade the call.
+            ->withOptions(['allow_redirects' => false]);
 
         if ($retries > 0) {
-            // Small linear backoff; throw=false so a final failure is handled by
-            // the caller's ->failed() check rather than raising here.
-            $request = $request->retry($retries + 1, 100, throw: false);
+            // Small linear backoff; retry only transient failures (timeouts, 5xx,
+            // 429) so a permanent 4xx (bad key/input) doesn't burn an extra call.
+            // throw=false so a final failure is handled by the caller's ->failed().
+            $request = $request->retry(
+                $retries + 1,
+                100,
+                static fn (Throwable $e): bool => self::isTransientHttpError($e),
+                throw: false,
+            );
         }
 
         return $request;
+    }
+
+    protected static function isTransientHttpError(Throwable $e): bool
+    {
+        if ($e instanceof ConnectionException) {
+            return true;
+        }
+
+        if ($e instanceof RequestException && $e->response !== null) {
+            $status = $e->response->status();
+
+            return $status >= 500 || $status === 429;
+        }
+
+        return false;
     }
 }
