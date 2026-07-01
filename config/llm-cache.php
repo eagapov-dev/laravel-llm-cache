@@ -134,4 +134,24 @@ return [
 
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Stats & event recording (§8)
+    |--------------------------------------------------------------------------
+    |
+    | When `record` is true, an optional listener persists every Hit/Miss event
+    | to the `table` (driver-agnostic — works on any DB). The `llm-cache:stats`
+    | command aggregates that history. `estimated_tokens_saved` is reported as
+    | hits × avg_tokens_per_generation (an estimate; precise accounting belongs
+    | to a downstream listener such as laravel-ai-budget).
+    |
+    */
+
+    'stats' => [
+        'record' => (bool) env('LLM_CACHE_STATS_RECORD', false),
+        'connection' => env('LLM_CACHE_STATS_CONNECTION', null),
+        'table' => 'llm_cache_events',
+        'avg_tokens_per_generation' => (int) env('LLM_CACHE_STATS_AVG_TOKENS', 500),
+    ],
+
 ];

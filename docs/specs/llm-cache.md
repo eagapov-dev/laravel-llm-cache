@@ -277,7 +277,68 @@ Behavioral tests (§5.1) use a Pest dataset over `['array', 'pgvector']`.
 
 ---
 
-## 8. Open questions / future
+## 8. Stats command & event recording
+
+Concretises the §7 observability line: `llm-cache:stats` reads from a persisted
+**event history** written by an optional listener the package ships.
+
+### 8.1 Event recording (opt-in)
+
+- Config `stats.record` (default `false`). When `true`, the package registers a
+  `RecordCacheEvent` subscriber for `CacheHitEvent` and `CacheMissEvent`.
+- Each dispatched event appends one row to `llm_cache_events` (publishable
+  migration): `type` (`hit`|`miss`), `scope`, `similarity` (nullable — hits
+  only), `created_at`. Append-only; no `updated_at`.
+- Recording uses `stats.connection` (null = default connection) and
+  `stats.table` (default `llm_cache_events`). Driver-agnostic — no vector
+  column, so it works on any database (sqlite/mysql/pgsql).
+- **Recording must never break the request path**: a write failure is logged
+  and swallowed, consistent with the package's fail-open stance.
+
+### 8.2 `llm-cache:stats` command
+
+Aggregates the event history and prints: total calls, hits, misses, hit rate,
+and **estimated** tokens saved.
+
+- `estimated_tokens_saved = hits × stats.avg_tokens_per_generation` (config,
+  default `500`), explicitly labelled an estimate. The package stores no real
+  token counts; a downstream listener (laravel-ai-budget) can supply precise
+  accounting.
+- `--days=N` restricts counting to events within the last N days (default: all
+  time).
+- `--json` emits machine-readable output instead of a table.
+- If recording is disabled or the table is absent, the command prints guidance
+  on how to enable recording and exits `0` (never crashes).
+
+### 8.3 Acceptance (extends §5)
+
+```
+Given  recording enabled and H 'hit' rows + M 'miss' rows in llm_cache_events
+When   `llm-cache:stats --json` runs
+Then   it reports total=H+M, hits=H, misses=M, hit_rate=H/(H+M),
+       estimated_tokens_saved = H × avg_tokens_per_generation, exit 0.
+
+Given  an empty events table (recording enabled)
+When   the command runs
+Then   it reports 0 calls and a 0% hit rate, exit 0, no error (no divide-by-zero).
+
+Given  events older and newer than N days
+When   the command runs with --days=N
+Then   only events within the last N days are counted.
+
+Given  recording disabled or the table absent
+When   the command runs
+Then   it prints how to enable recording and exits 0.
+
+Given  the RecordCacheEvent subscriber is active
+When   a CacheHitEvent(scope, similarity) is dispatched
+Then   one 'hit' row is inserted with that scope and similarity;
+       a CacheMissEvent inserts a 'miss' row (similarity null).
+```
+
+---
+
+## 9. Open questions / future
 
 - Optional distributed lock to dedupe concurrent misses.
 - Multi-turn context hashing (fold a context digest into the scope or key).

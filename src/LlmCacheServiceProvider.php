@@ -5,9 +5,11 @@ namespace Yegoragapov\LlmCache;
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
+use Yegoragapov\LlmCache\Console\StatsCommand;
 use Yegoragapov\LlmCache\Contracts\EmbeddingProvider;
 use Yegoragapov\LlmCache\Contracts\VectorStore;
 use Yegoragapov\LlmCache\Exceptions\DimensionMismatchException;
+use Yegoragapov\LlmCache\Listeners\RecordCacheEvent;
 use Yegoragapov\LlmCache\Providers\HttpProvider;
 use Yegoragapov\LlmCache\Providers\NullProvider;
 use Yegoragapov\LlmCache\Providers\OpenAiProvider;
@@ -74,9 +76,24 @@ class LlmCacheServiceProvider extends ServiceProvider
             $this->publishes([
                 __DIR__.'/../database/migrations' => database_path('migrations'),
             ], 'llm-cache-migrations');
+
+            $this->commands([StatsCommand::class]);
         }
 
         $this->guardDimension();
+        $this->registerEventRecording();
+    }
+
+    /**
+     * Wire the optional event-recording subscriber when stats recording is on.
+     */
+    protected function registerEventRecording(): void
+    {
+        if (! $this->app->make(ConfigRepository::class)->get('llm-cache.stats.record')) {
+            return;
+        }
+
+        $this->app->make('events')->subscribe(RecordCacheEvent::class);
     }
 
     /**
