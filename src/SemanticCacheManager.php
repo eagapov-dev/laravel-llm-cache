@@ -274,13 +274,16 @@ class SemanticCacheManager
         }
 
         if (is_array($context)) {
-            // Fail loud rather than silently returning the bare scope — a dropped
-            // digest collapses distinct conversations into one scope and leaks
-            // cached answers across them (the exact thing §10 prevents).
-            try {
-                $raw = json_encode($context, JSON_THROW_ON_ERROR);
-            } catch (\JsonException $e) {
-                throw new \InvalidArgumentException('llm-cache: context is not JSON-encodable for scoping.', 0, $e);
+            // Must never throw: contextScope() runs before the fail-open try in
+            // remember(), so an exception here would break the app's LLM path.
+            // But it must also never silently drop the digest (that collapses
+            // distinct conversations into one scope and leaks answers across
+            // them). Substitute invalid UTF-8, and fall back to serialize() for
+            // anything json can't encode — always a stable, isolating digest.
+            $raw = json_encode($context, JSON_INVALID_UTF8_SUBSTITUTE);
+
+            if ($raw === false) {
+                $raw = serialize($context);
             }
         } else {
             $raw = $context;
