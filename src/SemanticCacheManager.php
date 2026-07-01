@@ -62,7 +62,7 @@ class SemanticCacheManager
         // follow-ups don't collide across conversations.
         $scope = $this->contextScope($scope, $context);
 
-        $threshold ??= (float) $this->config['threshold'];
+        $threshold ??= (float) ($this->config['threshold'] ?? 0.95);
 
         // §7: embed + search are the cache-layer read path. Any failure here is
         // handled by the configured fail mode (open by default).
@@ -78,6 +78,10 @@ class SemanticCacheManager
                 'scope' => $scope,
                 'exception' => $e->getMessage(),
             ]);
+
+            // Emit a miss so stats stay truthful during a provider/store outage —
+            // otherwise the hit rate flatlines exactly when you need to see it.
+            $this->events->dispatch(new CacheMissEvent($prompt, $scope));
 
             return $callback();
         }
@@ -251,6 +255,11 @@ class SemanticCacheManager
         return $this->store->flush();
     }
 
+    public function purgeExpired(): int
+    {
+        return $this->store->purgeExpired();
+    }
+
     /**
      * Fold a conversation-context digest into a scope (§10). Null/empty context
      * returns the scope unchanged. Exposed so callers can target one
@@ -260,13 +269,24 @@ class SemanticCacheManager
      */
     public function contextScope(string $scope, string|array|null $context = null): string
     {
-        $raw = is_array($context) ? (string) json_encode($context) : (string) $context;
-
-        if ($raw === '' || $raw === '[]') {
+        if ($context === null || $context === '' || $context === []) {
             return $scope;
         }
 
-        return $scope.'#ctx:'.substr(sha1($raw), 0, 16);
+        if (is_array($context)) {
+            // Fail loud rather than silently returning the bare scope — a dropped
+            // digest collapses distinct conversations into one scope and leaks
+            // cached answers across them (the exact thing §10 prevents).
+            try {
+                $raw = json_encode($context, JSON_THROW_ON_ERROR);
+            } catch (\JsonException $e) {
+                throw new \InvalidArgumentException('llm-cache: context is not JSON-encodable for scoping.', 0, $e);
+            }
+        } else {
+            $raw = $context;
+        }
+
+        return $scope.'#ctx:'.hash('sha256', $raw);
     }
 
     /**
@@ -285,13 +305,29 @@ class SemanticCacheManager
             return null;
         }
 
-        return CarbonInterval::fromString((string) $ttl);
+        // A malformed ttl (e.g. bare "3600" with no unit) must not throw here:
+        // the callback has already run and the response is in hand. Degrade to
+        // "no expiry" and warn rather than discarding a paid-for generation.
+        try {
+            return CarbonInterval::fromString((string) $ttl);
+        } catch (Throwable $e) {
+            Log::warning('llm-cache: invalid ttl config, storing without expiry', [
+                'ttl' => is_scalar($ttl) ? (string) $ttl : gettype($ttl),
+            ]);
+
+            return null;
+        }
     }
 
+    /**
+     * The configured fail mode, normalized. Governs the read path (embed +
+     * search) only; put/lock always fail open by design (§6, §9.3). Any
+     * unrecognized value falls back to "open".
+     */
     protected function failMode(): string
     {
         $mode = $this->config['fail_mode'] ?? 'open';
 
-        return is_string($mode) ? $mode : 'open';
+        return $mode === 'closed' ? 'closed' : 'open';
     }
 }

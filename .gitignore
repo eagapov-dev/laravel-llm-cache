@@ -1,6 +1,9 @@
 /vendor/
 /build/
 /.claude/
+.env
+.env.*
+!.env.example
 composer.lock
 .phpunit.result.cache
 .phpunit.cache/

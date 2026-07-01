@@ -80,6 +80,11 @@ it('re-reads under the lock and reuses a leader-populated entry without generati
         {
             return 0;
         }
+
+        public function purgeExpired(): int
+        {
+            return 0;
+        }
     };
 
     $manager = lockManager($store, []);

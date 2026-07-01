@@ -7,6 +7,7 @@ use RuntimeException;
 use Yegoragapov\LlmCache\Contracts\VectorStore;
 use Yegoragapov\LlmCache\DataObjects\CacheEntry;
 use Yegoragapov\LlmCache\DataObjects\CacheHit;
+use Yegoragapov\LlmCache\Exceptions\DimensionMismatchException;
 
 /**
  * Second flagship store: Redis Stack / Redis 8+ with the RediSearch module.
@@ -68,7 +69,13 @@ class RedisStore implements VectorStore
             return null;
         }
 
-        $this->raw(['HINCRBY', $key, 'hits', '1']);
+        // Best-effort hit counter — never let a failed increment demote a valid
+        // hit to a miss (which would regenerate + store a duplicate).
+        try {
+            $this->raw(['HINCRBY', $key, 'hits', '1']);
+        } catch (\Throwable $e) {
+            // non-essential; swallow
+        }
 
         return new CacheHit(
             response: (string) ($fields['response'] ?? ''),
@@ -100,6 +107,13 @@ class RedisStore implements VectorStore
             'prompt_preview', (string) ($entry->promptPreview ?? ''),
             'meta', $meta,
         ]);
+
+        // Give the key a native TTL so Redis reclaims memory and RediSearch drops
+        // the doc automatically once it expires — the @expires_at query filter
+        // then becomes a redundant safety net rather than the only cleanup path.
+        if ($entry->expiresAt !== null) {
+            $this->raw(['PEXPIREAT', $key, (string) ($entry->expiresAt->getTimestamp() * 1000)]);
+        }
     }
 
     public function forget(string $scope): int
@@ -143,6 +157,35 @@ class RedisStore implements VectorStore
         return $total;
     }
 
+    public function purgeExpired(): int
+    {
+        $this->ensureIndex();
+
+        $now = time();
+        $removed = 0;
+
+        // Native key TTLs (set in put()) already reclaim most expired entries;
+        // this sweeps any that lack a TTL or predate the feature. Page like
+        // forget() since deletion shrinks the result set each pass.
+        do {
+            /** @var array<int, mixed> $reply */
+            $reply = (array) $this->raw([
+                'FT.SEARCH', $this->index(), '@expires_at:[-inf ('.$now.']',
+                'NOCONTENT', 'LIMIT', '0', '10000',
+                'DIALECT', '2',
+            ]);
+
+            $keys = array_slice($reply, 1);
+
+            if ($keys !== []) {
+                $this->raw(array_merge(['DEL'], array_map('strval', $keys)));
+                $removed += count($keys);
+            }
+        } while (count($keys) >= 10000);
+
+        return $removed;
+    }
+
     /**
      * Serialize a vector to a FLOAT32 little-endian blob for RediSearch.
      *
@@ -151,11 +194,11 @@ class RedisStore implements VectorStore
     public function vectorBlob(array $vector): string
     {
         if (count($vector) !== $this->dimensions) {
-            throw new RuntimeException(sprintf(
-                'Vector has %d dimensions, expected %d.',
+            throw DimensionMismatchException::make(
+                $this->providerName,
                 count($vector),
                 $this->dimensions,
-            ));
+            );
         }
 
         return pack('g*', ...array_map('floatval', $vector));
@@ -172,7 +215,10 @@ class RedisStore implements VectorStore
                 'FT.CREATE', $this->index(),
                 'ON', 'HASH', 'PREFIX', '1', $this->prefix(),
                 'SCHEMA',
-                'scope', 'TAG',
+                // CASESENSITIVE so scopes isolate byte-exactly, matching the
+                // pgvector/array drivers. Without it RediSearch lowercases tags,
+                // silently collapsing e.g. "User:42" and "user:42".
+                'scope', 'TAG', 'CASESENSITIVE',
                 'expires_at', 'NUMERIC',
                 'embedding', 'VECTOR', $this->algorithm(), '6',
                 'TYPE', 'FLOAT32', 'DIM', (string) $this->dimensions, 'DISTANCE_METRIC', 'COSINE',
@@ -248,6 +294,11 @@ class RedisStore implements VectorStore
      */
     protected function escapeTag(string $value): string
     {
+        // Escape the backslash FIRST — it is RediSearch's own escape character,
+        // so a scope containing "\" would otherwise corrupt the query (and could
+        // break out of the tag filter across the scope boundary).
+        $value = str_replace('\\', '\\\\', $value);
+
         return preg_replace('/[,.<>{}\[\]"\':;!@#$%^&*()\-+=~| ]/', '\\\\$0', $value) ?? $value;
     }
 

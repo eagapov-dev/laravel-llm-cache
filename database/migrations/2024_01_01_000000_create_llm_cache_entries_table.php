@@ -26,7 +26,10 @@ return new class extends Migration
 
         $table = $this->table();
         $dimension = (int) config('llm-cache.dimension');
-        $method = config('llm-cache.stores.pgvector.index') === 'hnsw' ? 'hnsw' : 'ivfflat';
+        // Default to hnsw: it builds incrementally (correct on an empty table)
+        // and has higher recall than ivfflat, whose k-means partitions are
+        // degenerate until rebuilt on representative data.
+        $method = config('llm-cache.stores.pgvector.index') === 'ivfflat' ? 'ivfflat' : 'hnsw';
 
         // Enable the pgvector extension (idempotent).
         $db->statement('CREATE EXTENSION IF NOT EXISTS vector');
@@ -49,12 +52,22 @@ return new class extends Migration
         $db->statement(sprintf('ALTER TABLE %s ADD COLUMN embedding vector(%d)', $table, $dimension));
 
         // ANN cosine index for SQL-side threshold filtering (§5.2 / §7).
+        if ($method === 'hnsw') {
+            $m = (int) config('llm-cache.stores.pgvector.hnsw.m', 16);
+            $efConstruction = (int) config('llm-cache.stores.pgvector.hnsw.ef_construction', 64);
+            $with = sprintf('WITH (m = %d, ef_construction = %d)', $m, $efConstruction);
+        } else {
+            $lists = (int) config('llm-cache.stores.pgvector.ivfflat.lists', 100);
+            $with = sprintf('WITH (lists = %d)', $lists);
+        }
+
         $db->statement(sprintf(
-            'CREATE INDEX %s_embedding_%s_idx ON %s USING %s (embedding vector_cosine_ops)',
+            'CREATE INDEX %s_embedding_%s_idx ON %s USING %s (embedding vector_cosine_ops) %s',
             $table,
             $method,
             $table,
             $method,
+            $with,
         ));
     }
 

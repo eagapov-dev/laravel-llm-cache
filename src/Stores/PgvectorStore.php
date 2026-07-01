@@ -34,6 +34,11 @@ class PgvectorStore implements VectorStore
         $table = $this->table();
         $literal = self::vectorLiteral($vector);
 
+        // Raise ANN recall before the query. With a scope + expiry post-filter
+        // and LIMIT 1, the default probes/ef_search often return only candidates
+        // from other scopes, yielding a false miss. See config `probes`/`ef_search`.
+        $this->applyRecallTuning($connection);
+
         // Single SELECT: same scope, not expired, cosine-similarity threshold
         // filtered in SQL, ordered by ANN cosine distance, top 1.
         $row = $connection->selectOne(
@@ -54,10 +59,17 @@ class PgvectorStore implements VectorStore
         /** @var array<string, mixed> $data */
         $data = (array) $row;
 
-        $connection->update(
-            "UPDATE {$table} SET hits = hits + 1, updated_at = ? WHERE id = ?",
-            [Carbon::now()->toDateTimeString(), $data['id']],
-        );
+        // Best-effort hit counter: a failure here (read replica, transient blip)
+        // must never demote a valid hit to a miss and trigger a needless
+        // regeneration + duplicate row.
+        try {
+            $connection->update(
+                "UPDATE {$table} SET hits = hits + 1, updated_at = ? WHERE id = ?",
+                [Carbon::now()->toDateTimeString(), $data['id']],
+            );
+        } catch (\Throwable $e) {
+            // non-essential; swallow
+        }
 
         return new CacheHit(
             response: (string) $data['response'],
@@ -109,6 +121,35 @@ class PgvectorStore implements VectorStore
         return $this->connection()->delete("DELETE FROM {$this->table()}");
     }
 
+    public function purgeExpired(): int
+    {
+        return $this->connection()->delete(
+            "DELETE FROM {$this->table()} WHERE expires_at IS NOT NULL AND expires_at <= now()",
+        );
+    }
+
+    /**
+     * Apply the configured query-time ANN recall setting for the active index
+     * method. Uses SET (session-scoped) so it persists for pooled connections;
+     * best-effort so an unexpected pgvector build can't break lookups.
+     */
+    protected function applyRecallTuning(ConnectionInterface $connection): void
+    {
+        $method = $this->config['index'] ?? 'hnsw';
+
+        try {
+            if ($method === 'ivfflat') {
+                $probes = max(1, (int) ($this->config['probes'] ?? 8));
+                $connection->statement("SET ivfflat.probes = {$probes}");
+            } else {
+                $efSearch = max(1, (int) ($this->config['ef_search'] ?? 64));
+                $connection->statement("SET hnsw.ef_search = {$efSearch}");
+            }
+        } catch (\Throwable $e) {
+            // recall tuning is an optimization; never let it break a search
+        }
+    }
+
     /**
      * Serialize a vector to a pgvector text literal: `[v1,v2,...]`.
      *
@@ -138,8 +179,16 @@ class PgvectorStore implements VectorStore
     protected function table(): string
     {
         $table = $this->config['table'] ?? 'llm_cache_entries';
+        $table = is_string($table) ? $table : 'llm_cache_entries';
 
-        return is_string($table) ? $table : 'llm_cache_entries';
+        // The name is interpolated into SQL (identifiers can't be bound), so
+        // constrain it to a safe identifier shape as defense-in-depth against a
+        // misconfigured/less-trusted config source.
+        if (! preg_match('/^[A-Za-z0-9_]+$/', $table)) {
+            throw new \InvalidArgumentException("Invalid llm-cache table name [{$table}].");
+        }
+
+        return $table;
     }
 
     /**

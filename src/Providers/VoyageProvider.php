@@ -18,6 +18,8 @@ use Yegoragapov\LlmCache\Contracts\EmbeddingProvider;
  */
 class VoyageProvider implements EmbeddingProvider
 {
+    use AppliesHttpOptions;
+
     protected const ENDPOINT = 'https://api.voyageai.com/v1/embeddings';
 
     protected const DEFAULT_MODEL = 'voyage-3';
@@ -47,7 +49,7 @@ class VoyageProvider implements EmbeddingProvider
      */
     public function embed(string $text): array
     {
-        $response = Http::withToken($this->key())
+        $response = $this->applyHttpOptions(Http::withToken($this->key()))
             ->asJson()
             ->post(self::ENDPOINT, [
                 'model' => $this->model(),

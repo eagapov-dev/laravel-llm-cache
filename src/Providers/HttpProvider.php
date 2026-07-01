@@ -19,6 +19,8 @@ use Yegoragapov\LlmCache\Contracts\EmbeddingProvider;
  */
 class HttpProvider implements EmbeddingProvider
 {
+    use AppliesHttpOptions;
+
     /**
      * @param array<string, mixed> $config config keys: endpoint, dimensions
      */
@@ -38,7 +40,14 @@ class HttpProvider implements EmbeddingProvider
             throw new RuntimeException('HttpProvider requires a non-empty "endpoint" config value.');
         }
 
-        $response = Http::asJson()->post($endpoint, [
+        // The endpoint carries no bearer token, but responses may be sensitive
+        // and the value is operator-supplied — require TLS so it can't be
+        // downgraded to plaintext (or an internal http:// address) unnoticed.
+        if (! str_starts_with(strtolower($endpoint), 'https://')) {
+            throw new RuntimeException('HttpProvider endpoint must use HTTPS.');
+        }
+
+        $response = $this->applyHttpOptions(Http::asJson())->post($endpoint, [
             'input' => $text,
         ]);
 

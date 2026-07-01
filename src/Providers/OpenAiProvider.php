@@ -17,6 +17,8 @@ use Yegoragapov\LlmCache\Contracts\EmbeddingProvider;
  */
 class OpenAiProvider implements EmbeddingProvider
 {
+    use AppliesHttpOptions;
+
     protected const ENDPOINT = 'https://api.openai.com/v1/embeddings';
 
     protected const DEFAULT_MODEL = 'text-embedding-3-small';
@@ -45,7 +47,7 @@ class OpenAiProvider implements EmbeddingProvider
      */
     public function embed(string $text): array
     {
-        $response = Http::withToken($this->key())
+        $response = $this->applyHttpOptions(Http::withToken($this->key()))
             ->asJson()
             ->post(self::ENDPOINT, [
                 'model' => $this->model(),

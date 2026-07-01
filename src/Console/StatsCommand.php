@@ -32,7 +32,9 @@ class StatsCommand extends Command
         }
 
         $days = $this->option('days');
-        $days = is_numeric($days) ? (int) $days : null;
+        // Clamp to a non-negative window; a negative value would query the future
+        // and always return zero.
+        $days = is_numeric($days) ? max(0, (int) $days) : null;
 
         $query = DB::connection($connectionName)->table($table);
 

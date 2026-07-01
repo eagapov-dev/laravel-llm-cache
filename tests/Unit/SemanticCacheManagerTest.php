@@ -65,6 +65,11 @@ class FakeVectorStore implements VectorStore
     {
         return 0;
     }
+
+    public function purgeExpired(): int
+    {
+        return 0;
+    }
 }
 
 /**

@@ -114,6 +114,26 @@ class ArrayStore implements VectorStore
         return $removed;
     }
 
+    public function purgeExpired(): int
+    {
+        $remaining = [];
+        $removed = 0;
+
+        foreach ($this->entries as $entry) {
+            if ($entry->isExpired()) {
+                $removed++;
+
+                continue;
+            }
+
+            $remaining[] = $entry;
+        }
+
+        $this->entries = $remaining;
+
+        return $removed;
+    }
+
     /**
      * Test-support accessor. Returns stored entries (re-indexed) so callers can
      * assert on the `hits` counter and other row fields.

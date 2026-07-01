@@ -93,6 +93,13 @@ return [
     |--------------------------------------------------------------------------
     | Provider driver options
     |--------------------------------------------------------------------------
+    |
+    | Every HTTP-backed provider is bounded by connect/response timeouts and a
+    | small retry budget so a slow or hung embedding endpoint can never stall the
+    | request thread — fail-open only protects against *thrown* failures, and an
+    | unbounded hang throws nothing. Seconds; shared defaults, overridable per
+    | provider.
+    |
     */
 
     'providers' => [
@@ -100,16 +107,25 @@ return [
         'openai' => [
             'key' => env('OPENAI_API_KEY'),
             'model' => env('LLM_CACHE_OPENAI_MODEL', 'text-embedding-3-small'),
+            'connect_timeout' => (int) env('LLM_CACHE_HTTP_CONNECT_TIMEOUT', 3),
+            'timeout' => (int) env('LLM_CACHE_HTTP_TIMEOUT', 10),
+            'retries' => (int) env('LLM_CACHE_HTTP_RETRIES', 1),
         ],
 
         'voyage' => [
             'key' => env('VOYAGE_API_KEY'),
             'model' => env('LLM_CACHE_VOYAGE_MODEL', 'voyage-3'),
+            'connect_timeout' => (int) env('LLM_CACHE_HTTP_CONNECT_TIMEOUT', 3),
+            'timeout' => (int) env('LLM_CACHE_HTTP_TIMEOUT', 10),
+            'retries' => (int) env('LLM_CACHE_HTTP_RETRIES', 1),
         ],
 
         'http' => [
             'endpoint' => env('LLM_CACHE_HTTP_ENDPOINT'),
             'dimensions' => (int) env('LLM_CACHE_HTTP_DIMENSIONS', 1536),
+            'connect_timeout' => (int) env('LLM_CACHE_HTTP_CONNECT_TIMEOUT', 3),
+            'timeout' => (int) env('LLM_CACHE_HTTP_TIMEOUT', 10),
+            'retries' => (int) env('LLM_CACHE_HTTP_RETRIES', 1),
         ],
 
     ],
@@ -125,7 +141,27 @@ return [
         'pgvector' => [
             'connection' => env('LLM_CACHE_DB_CONNECTION', null),
             'table' => 'llm_cache_entries',
-            'index' => env('LLM_CACHE_ANN_INDEX', 'ivfflat'), // ivfflat | hnsw
+
+            // ANN index method. hnsw is the default: it builds incrementally
+            // (correct even when the migration runs on an empty table) and has
+            // higher recall than ivfflat, whose k-means partitions are degenerate
+            // until rebuilt on representative data.
+            'index' => env('LLM_CACHE_ANN_INDEX', 'hnsw'), // hnsw | ivfflat
+
+            // Build-time index parameters (used by the migration).
+            'hnsw' => [
+                'm' => (int) env('LLM_CACHE_HNSW_M', 16),
+                'ef_construction' => (int) env('LLM_CACHE_HNSW_EF_CONSTRUCTION', 64),
+            ],
+            'ivfflat' => [
+                'lists' => (int) env('LLM_CACHE_IVFFLAT_LISTS', 100),
+            ],
+
+            // Query-time recall knobs, applied per search(). Higher = better
+            // recall (fewer false cache misses), slightly higher latency. Without
+            // these, filtered KNN on a scoped table silently under-recalls.
+            'ef_search' => (int) env('LLM_CACHE_HNSW_EF_SEARCH', 64), // hnsw
+            'probes' => (int) env('LLM_CACHE_IVFFLAT_PROBES', 8),     // ivfflat
         ],
 
         'redis' => [
