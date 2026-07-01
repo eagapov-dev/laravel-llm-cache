@@ -40,8 +40,9 @@ class SemanticCacheManager
      * Serve a cached response for a semantically-equivalent prompt, or run the
      * callback and cache its result.
      *
-     * @param  Closure(): string     $callback The real LLM call.
-     * @param  array<string, mixed>  $meta     Arbitrary caller metadata; `model` is lifted to a typed column.
+     * @param  Closure(): string        $callback The real LLM call.
+     * @param  array<string, mixed>     $meta     Arbitrary caller metadata; `model` is lifted to a typed column.
+     * @param  string|array<mixed>|null $context  Conversation context to isolate on (§10); folded into the scope.
      */
     public function remember(
         string $prompt,
@@ -50,11 +51,16 @@ class SemanticCacheManager
         ?CarbonInterval $ttl = null,
         string $scope = 'global',
         array $meta = [],
+        string|array|null $context = null,
     ): string {
         // §6: an empty prompt bypasses the cache entirely — no store, no events.
         if (trim($prompt) === '') {
             return $callback();
         }
+
+        // §10: fold any conversation context into the scope so context-dependent
+        // follow-ups don't collide across conversations.
+        $scope = $this->contextScope($scope, $context);
 
         $threshold ??= (float) $this->config['threshold'];
 
@@ -243,6 +249,24 @@ class SemanticCacheManager
     public function flush(): int
     {
         return $this->store->flush();
+    }
+
+    /**
+     * Fold a conversation-context digest into a scope (§10). Null/empty context
+     * returns the scope unchanged. Exposed so callers can target one
+     * conversation's entries with forget().
+     *
+     * @param string|array<mixed>|null $context
+     */
+    public function contextScope(string $scope, string|array|null $context = null): string
+    {
+        $raw = is_array($context) ? (string) json_encode($context) : (string) $context;
+
+        if ($raw === '' || $raw === '[]') {
+            return $scope;
+        }
+
+        return $scope.'#ctx:'.substr(sha1($raw), 0, 16);
     }
 
     /**

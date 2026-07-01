@@ -187,6 +187,33 @@ A prompt cached under `user:1` will **not** be served to `user:2`. Personalized
 or PII responses under the `global` scope are a documented footgun — always scope
 them.
 
+### Multi-turn / conversation context
+
+By default `remember()` is stateless — it caches by the prompt alone. A
+context-dependent follow-up ("and what about refunds?") means different things in
+different conversations, so pass the prior turns as `context` to isolate the
+entry by a digest of that context:
+
+```php
+$reply = SemanticCache::remember(
+    prompt: $followUp,
+    callback: fn () => $llm->answer($conversation),
+    scope: "user:{$user->id}",
+    context: $priorTurns,        // string, or an array of prior messages
+);
+```
+
+The **prompt** is still matched semantically; the **context** is matched exactly
+(same digest → same scope). The same follow-up under an identical context hits;
+under any different context it misses — no cross-conversation leakage. Passing no
+`context` keeps the stateless behaviour.
+
+To forget one conversation's entries, derive its scope:
+
+```php
+SemanticCache::forget(SemanticCache::contextScope("user:{$user->id}", $priorTurns));
+```
+
 ---
 
 ## Events

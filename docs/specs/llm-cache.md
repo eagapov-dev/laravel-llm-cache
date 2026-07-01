@@ -28,12 +28,16 @@ Postgres app with no extra infra).
 - Configurable similarity threshold (global + per-call override).
 - TTL-based expiry and manual/tag invalidation.
 - Per-scope key isolation (global vs per-user) to prevent cross-user leakage.
+- Opt-in conversation-context isolation: a context digest folded into the scope
+  so context-dependent follow-ups don't collide across conversations (§10).
 - Hit/miss + token-saved metrics via events.
 - Publishable config and migration.
 
 **Out of scope**
-- Conversation-context-aware caching (multi-turn). Only stateless single-prompt
-  caching is supported in v1. Context-dependent prompts must opt out.
+- Semantic matching *across differing* conversation contexts. Context is matched
+  **exactly** (by digest), not semantically — a paraphrased earlier turn yields a
+  different digest and thus a miss. The stateless single-prompt path (no context)
+  remains the default.
 - Automatic embedding-cost accounting/budgeting. Left to laravel-ai-budget;
   this package only emits events another package can consume.
 - Streaming responses. `remember()` caches complete responses only.
@@ -409,7 +413,60 @@ Then   both may generate — unchanged v1 behaviour.
 
 ---
 
-## 10. Open questions / future
+## 10. Multi-turn context hashing
 
-- Multi-turn context hashing (fold a context digest into the scope or key).
+The default path is stateless: `remember($prompt, ...)` caches by the prompt
+alone. A context-dependent follow-up ("and what about refunds?") means different
+things in different conversations, so caching it globally would serve a wrong
+answer. Passing a `context` isolates the entry by a digest of that context.
+
+### 10.1 Mechanism
+
+`remember()` accepts an optional `context` (a `string`, or an `array` of prior
+turns). When present, a stable digest is folded into the scope:
+
+```
+effectiveScope = "{scope}#ctx:{sha1(context)[:16]}"
+```
+
+All cache operations (embed → search → put → events) use `effectiveScope`. The
+**prompt** is still matched semantically (same vector); the **context** is
+matched exactly (same digest → same scope). So the same follow-up under an
+identical prior context hits, and under any different context misses.
+
+- `context` as an array is serialized deterministically (JSON, order-preserving)
+  before hashing, so the same message list yields the same digest.
+- Empty/absent context (`null`, `''`, `[]`) → no folding; behaviour unchanged.
+- `SemanticCache::contextScope($scope, $context)` exposes the derivation so a
+  caller can `forget()` a specific conversation's entries (`forget()` matches the
+  exact scope, including the folded one).
+
+### 10.2 Acceptance (extends §5)
+
+```
+Given  a follow-up prompt P with context C1 and an empty cache
+When   remember(P, ..., context: C1) is called
+Then   it misses and stores the entry under scope "{scope}#ctx:{digest(C1)}".
+
+Given  a cached entry for P under context C1
+When   remember(P, ..., context: C1) is called again (same context)
+Then   it hits — the callback does not run.
+
+Given  a cached entry for P under context C1
+When   remember(P, ..., context: C2) with a different context is called
+Then   it misses (no cross-context leakage); a separate entry is stored.
+
+Given  context passed as an array of prior turns
+When   the same array is passed twice
+Then   the digest is identical, so the second call hits.
+
+Given  no context (default)
+When   remember(P) is called
+Then   behaviour is unchanged — the plain scope is used, no folding.
+```
+
+---
+
+## 11. Open questions / future
+
 - Adaptive threshold tuning from observed hit/miss quality.
