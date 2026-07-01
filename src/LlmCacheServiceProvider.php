@@ -2,10 +2,12 @@
 
 namespace Yegoragapov\LlmCache;
 
+use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
 use Yegoragapov\LlmCache\Contracts\EmbeddingProvider;
 use Yegoragapov\LlmCache\Contracts\VectorStore;
+use Yegoragapov\LlmCache\Exceptions\DimensionMismatchException;
 use Yegoragapov\LlmCache\Providers\HttpProvider;
 use Yegoragapov\LlmCache\Providers\NullProvider;
 use Yegoragapov\LlmCache\Providers\OpenAiProvider;
@@ -81,13 +83,20 @@ class LlmCacheServiceProvider extends ServiceProvider
      * Boot-time guard: the configured provider's dimensions() must equal the
      * configured vector dimension (and thus the migration's vector(N)).
      *
-     * NOT IMPLEMENTED (Phase 0). Wired to a red §5.2 acceptance test; the real
-     * throw-on-mismatch lands on `feat/store-pgvector`.
+     * Throws at boot — never at query time. dimensions() is guaranteed cheap
+     * (no network), so resolving the provider here is safe.
      */
     protected function guardDimension(): void
     {
-        // TODO(feat/store-pgvector): resolve provider, compare
-        // $provider->dimensions() to config('llm-cache.dimension') and throw
-        // DimensionMismatchException on mismatch — at boot, not at query time.
+        $provider = $this->app->make(EmbeddingProvider::class);
+        $configured = (int) $this->app->make(ConfigRepository::class)->get('llm-cache.dimension');
+
+        if ($provider->dimensions() !== $configured) {
+            throw DimensionMismatchException::make(
+                $provider->name(),
+                $provider->dimensions(),
+                $configured,
+            );
+        }
     }
 }
