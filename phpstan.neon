@@ -1,0 +1,7 @@
+parameters:
+    level: 8
+    paths:
+        - src
+    # tests/ are excluded: Pest closures need the pest-phpstan plugin to
+    # analyse cleanly at level 8, and that's a new dev dependency.
+    tmpDir: build/phpstan

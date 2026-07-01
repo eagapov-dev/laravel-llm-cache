@@ -1,4 +1,6 @@
 /vendor/
+/build/
+/.claude/
 composer.lock
 .phpunit.result.cache
 .phpunit.cache/
