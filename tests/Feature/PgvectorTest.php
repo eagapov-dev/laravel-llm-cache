@@ -1,8 +1,10 @@
 <?php
 
 use Yegoragapov\LlmCache\Contracts\EmbeddingProvider;
+use Yegoragapov\LlmCache\DataObjects\CacheEntry;
 use Yegoragapov\LlmCache\Exceptions\DimensionMismatchException;
 use Yegoragapov\LlmCache\LlmCacheServiceProvider;
+use Yegoragapov\LlmCache\Stores\PgvectorStore;
 use Yegoragapov\LlmCache\Tests\Support\FakeEmbeddingProvider;
 
 /*
@@ -26,9 +28,40 @@ it('applies the cosine-distance threshold in SQL via the ANN index, not in PHP',
         test()->markTestSkipped('Requires a Postgres + vector test backend (LLM_CACHE_TEST_PGVECTOR=1).');
     }
 
-    // With the pgvector backend enabled, this seeds entries, runs a search, and
-    // asserts (via the query log) that the SELECT uses the `<=>` cosine operator
-    // with a distance predicate — i.e. filtering happens in SQL, not PHP.
-    // Implemented on feat/store-pgvector.
-    expect(true)->toBeTrue();
-})->todo();
+    $dimension = 3;
+    config()->set('llm-cache.dimension', $dimension);
+    config()->set('llm-cache.store', 'pgvector');
+
+    // Bring up the pgvector schema on the configured Postgres connection.
+    $connectionName = config('llm-cache.stores.pgvector.connection');
+    $migration = require __DIR__.'/../../database/migrations/2024_01_01_000000_create_llm_cache_entries_table.php';
+    $migration->down();
+    $migration->up();
+
+    $store = new PgvectorStore(
+        app('db'),
+        (array) config('llm-cache.stores.pgvector'),
+        $dimension,
+        'fake',
+    );
+
+    // Seed a near vector (cosine sim 1.0 to the query) and a far, orthogonal one.
+    $store->put(new CacheEntry(vector: [1.0, 0.0, 0.0], response: 'near', scope: 'global'));
+    $store->put(new CacheEntry(vector: [0.0, 1.0, 0.0], response: 'far', scope: 'global'));
+
+    $connection = app('db')->connection(is_string($connectionName) ? $connectionName : null);
+    $connection->flushQueryLog();
+    $connection->enableQueryLog();
+
+    $hit = $store->search([1.0, 0.0, 0.0], 'global', 0.95);
+
+    $queries = collect($connection->getQueryLog())->pluck('query')->implode("\n");
+
+    // Threshold filtering happens in SQL via the cosine operator — not in PHP.
+    expect($queries)->toContain('<=>');
+    expect($hit)->not->toBeNull();
+    expect($hit->response)->toBe('near');
+    expect($hit->similarity)->toBeGreaterThanOrEqual(0.95);
+
+    $migration->down();
+});
