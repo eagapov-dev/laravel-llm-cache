@@ -29,4 +29,11 @@ interface VectorStore
      * Remove every entry. Returns the number of rows removed.
      */
     public function flush(): int;
+
+    /**
+     * Reclaim entries whose expiry is in the past. Expired entries are already
+     * excluded from search(); this physically deletes them so the store (and its
+     * ANN index) don't grow without bound. Returns the number of rows removed.
+     */
+    public function purgeExpired(): int;
 }
