@@ -57,6 +57,13 @@ function useStore(string $store): void
     app()->forgetInstance(VectorStore::class);
     app()->forgetInstance(SemanticCacheManager::class);
     app()->forgetInstance('llm-cache');
+
+    // Rebuild the pgvector schema fresh (vector(16)) so each case starts empty.
+    if ($store === 'pgvector') {
+        $migration = require __DIR__.'/../../database/migrations/2024_01_01_000000_create_llm_cache_entries_table.php';
+        $migration->down();
+        $migration->up();
+    }
 }
 
 it('runs the callback and stores a fresh response on a cold miss', function (string $store) {
@@ -202,7 +209,10 @@ it('forgets only the targeted scope and returns the removed count', function (st
 function firstEntryHits(): int
 {
     if (config('llm-cache.store') === 'pgvector') {
-        return (int) \Illuminate\Support\Facades\DB::table('llm_cache_entries')->orderBy('id')->value('hits');
+        $connection = config('llm-cache.stores.pgvector.connection');
+
+        return (int) \Illuminate\Support\Facades\DB::connection(is_string($connection) ? $connection : null)
+            ->table('llm_cache_entries')->orderBy('id')->value('hits');
     }
 
     /** @var object|array $entry */
