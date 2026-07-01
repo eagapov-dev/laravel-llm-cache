@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Support\Facades\Log;
 use Yegoragapov\LlmCache\Contracts\EmbeddingProvider;
 use Yegoragapov\LlmCache\DataObjects\CacheEntry;
 use Yegoragapov\LlmCache\Exceptions\DimensionMismatchException;
@@ -13,14 +14,21 @@ use Yegoragapov\LlmCache\Tests\Support\FakeEmbeddingProvider;
 |--------------------------------------------------------------------------
 */
 
-it('throws a clear DimensionMismatchException at boot, not at query time', function () {
+it('detects a dimension mismatch at boot, not at query time', function () {
     // Provider inherently produces 16-d vectors; configuration claims 32.
     app()->instance(EmbeddingProvider::class, new FakeEmbeddingProvider(16));
     config()->set('llm-cache.dimension', 32);
 
     $provider = new LlmCacheServiceProvider(app());
 
-    expect(fn () => $provider->boot())->toThrow(DimensionMismatchException::class);
+    // In console the guard logs a warning instead of throwing, so remediation
+    // commands (migrate, config:clear, vendor:publish) still run rather than
+    // being bricked by the very misconfiguration they'd fix.
+    Log::shouldReceive('warning')
+        ->once()
+        ->withArgs(fn (string $message): bool => str_contains($message, 'produces 16-dimensional vectors'));
+
+    expect(fn () => $provider->boot())->not->toThrow(DimensionMismatchException::class);
 });
 
 it('applies the cosine-distance threshold in SQL via the ANN index, not in PHP', function () {
