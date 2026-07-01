@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: PHP ${{ matrix.php }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.2', '8.3', '8.4']
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: llmcache
+          POSTGRES_PASSWORD: secret
+          POSTGRES_DB: llmcache_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U llmcache"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis/redis-stack-server:latest
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: pdo, pdo_pgsql, mbstring, json
+          coverage: none
+          tools: composer:v2
+
+      - name: Cache Composer packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: composer-${{ matrix.php }}-${{ hashFiles('composer.json') }}
+          restore-keys: composer-${{ matrix.php }}-
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: PHPStan (level 8)
+        run: ./vendor/bin/phpstan analyse --level=8 --memory-limit=512M --no-progress
+
+      - name: Pest (array + pgvector + redis)
+        env:
+          LLM_CACHE_TEST_PGVECTOR: '1'
+          LLM_CACHE_TEST_REDIS: '1'
+          LLM_CACHE_PG_HOST: '127.0.0.1'
+          LLM_CACHE_PG_PORT: '5432'
+          LLM_CACHE_REDIS_HOST: '127.0.0.1'
+          LLM_CACHE_REDIS_PORT: '6379'
+        run: ./vendor/bin/pest
