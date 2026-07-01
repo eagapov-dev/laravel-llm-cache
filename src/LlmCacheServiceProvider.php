@@ -60,6 +60,7 @@ class LlmCacheServiceProvider extends ServiceProvider
                 $app->make(VectorStore::class),
                 $app['events'],
                 (array) $app['config']->get('llm-cache'),
+                $app['cache'],
             );
         });
 

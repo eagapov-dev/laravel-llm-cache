@@ -4,6 +4,9 @@ namespace Yegoragapov\LlmCache;
 
 use Carbon\CarbonInterval;
 use Closure;
+use Illuminate\Contracts\Cache\Factory as CacheFactory;
+use Illuminate\Contracts\Cache\Lock;
+use Illuminate\Contracts\Cache\LockProvider;
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -29,6 +32,7 @@ class SemanticCacheManager
         protected VectorStore $store,
         protected Dispatcher $events,
         protected array $config,
+        protected ?CacheFactory $cache = null,
     ) {
     }
 
@@ -79,7 +83,27 @@ class SemanticCacheManager
             return $hit->response;
         }
 
-        // Miss: generate, then persist for next time.
+        // Miss: generate (deduplicated by the optional lock), then persist.
+        return $this->lockEnabled()
+            ? $this->generateWithLock($prompt, $callback, $vector, $threshold, $scope, $ttl, $meta)
+            : $this->generateAndStore($prompt, $callback, $vector, $scope, $ttl, $meta);
+    }
+
+    /**
+     * Run the callback, persist the result, and dispatch the miss event.
+     *
+     * @param  Closure(): string     $callback
+     * @param  array<int, float>     $vector
+     * @param  array<string, mixed>  $meta
+     */
+    protected function generateAndStore(
+        string $prompt,
+        Closure $callback,
+        array $vector,
+        string $scope,
+        ?CarbonInterval $ttl,
+        array $meta,
+    ): string {
         $response = $callback();
 
         $ttl ??= $this->resolveConfigTtl();
@@ -109,6 +133,106 @@ class SemanticCacheManager
         $this->events->dispatch(new CacheMissEvent($prompt, $scope));
 
         return $response;
+    }
+
+    /**
+     * §9: dedupe concurrent identical misses. The leader generates while waiters
+     * block, then re-read the cache and reuse the leader's result. Any lock
+     * failure fails open to a plain generation.
+     *
+     * @param  Closure(): string     $callback
+     * @param  array<int, float>     $vector
+     * @param  array<string, mixed>  $meta
+     */
+    protected function generateWithLock(
+        string $prompt,
+        Closure $callback,
+        array $vector,
+        float $threshold,
+        string $scope,
+        ?CarbonInterval $ttl,
+        array $meta,
+    ): string {
+        $lock = $this->resolveLock($scope, $prompt);
+
+        if ($lock === null) {
+            return $this->generateAndStore($prompt, $callback, $vector, $scope, $ttl, $meta);
+        }
+
+        $wait = (int) ($this->config['lock']['wait'] ?? 10);
+
+        try {
+            $lock->block($wait);
+        } catch (Throwable $e) {
+            // Timed out waiting, or the lock backend errored — fail open.
+            Log::warning('llm-cache: lock unavailable, generating without dedup', [
+                'scope' => $scope,
+                'exception' => $e->getMessage(),
+            ]);
+
+            return $this->generateAndStore($prompt, $callback, $vector, $scope, $ttl, $meta);
+        }
+
+        try {
+            // A concurrent leader may have populated the cache while we waited.
+            try {
+                $hit = $this->store->search($vector, $scope, $threshold);
+            } catch (Throwable $e) {
+                $hit = null;
+            }
+
+            if ($hit !== null) {
+                $this->events->dispatch(new CacheHitEvent($prompt, $hit->similarity, $scope, $hit->entryId));
+
+                return $hit->response;
+            }
+
+            return $this->generateAndStore($prompt, $callback, $vector, $scope, $ttl, $meta);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    protected function lockEnabled(): bool
+    {
+        return $this->cache !== null && (bool) ($this->config['lock']['enabled'] ?? false);
+    }
+
+    /**
+     * Resolve an atomic lock for this scope+prompt, or null when the configured
+     * store is unavailable or lacks lock support (caller then fails open).
+     */
+    protected function resolveLock(string $scope, string $prompt): ?Lock
+    {
+        if ($this->cache === null) {
+            return null;
+        }
+
+        try {
+            $store = $this->cache->store($this->lockStoreName())->getStore();
+        } catch (Throwable $e) {
+            Log::warning('llm-cache: lock store unavailable, generating without dedup', [
+                'exception' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+
+        if (! $store instanceof LockProvider) {
+            return null;
+        }
+
+        $key = 'llm-cache:lock:'.sha1($scope.'|'.$prompt);
+        $ttl = (int) ($this->config['lock']['ttl'] ?? 10);
+
+        return $store->lock($key, $ttl);
+    }
+
+    protected function lockStoreName(): ?string
+    {
+        $name = $this->config['lock']['store'] ?? null;
+
+        return is_string($name) ? $name : null;
     }
 
     public function forget(string $scope): int

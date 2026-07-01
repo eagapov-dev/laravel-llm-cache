@@ -338,9 +338,72 @@ Then   one 'hit' row is inserted with that scope and similarity;
 
 ---
 
-## 9. Open questions / future
+## 9. Concurrent-miss deduplication (optional lock)
 
-- Optional distributed lock to dedupe concurrent misses.
+By default, concurrent identical misses may both generate (§6) — last write
+wins. Enabling `lock.enabled` deduplicates the common thundering-herd case: many
+identical prompts arriving at once.
+
+### 9.1 Mechanism
+
+On a miss with the lock enabled, `remember()` acquires an atomic lock keyed by
+`sha1(scope | prompt)` from a Laravel cache store that supports locks
+(`LockProvider` — redis, memcached, database, dynamodb, array):
+
+1. **Leader** acquires the lock immediately, re-checks the store (empty),
+   generates, stores, releases.
+2. **Waiter** blocks until the leader releases, then re-checks the store — which
+   now hits — and returns the leader's cached response WITHOUT generating.
+
+The lock keys on the exact `scope|prompt` string, so it dedupes byte-identical
+concurrent prompts. Semantically-near-but-not-identical concurrent misses are
+still tolerated (they don't share a lock key) — a pragmatic dedup, not a
+distributed barrier over vector space.
+
+### 9.2 Config (`llm-cache.lock`)
+
+- `enabled` (default `false`) — opt-in.
+- `store` (default `null` = default cache store) — must support atomic locks.
+- `ttl` (default `10`) — seconds a leader may hold the lock; MUST exceed the
+  worst-case generation time, or a waiter acquires mid-generation and
+  double-generates.
+- `wait` (default `10`) — seconds a waiter blocks before failing open.
+
+### 9.3 Fail-open
+
+The lock is an optimization, never a hard dependency. If the lock store is
+missing, lacks a `LockProvider`, or errors, `remember()` logs and generates
+without dedup — consistent with the package's fail-open stance. A waiter that
+exceeds `wait` also fails open and generates.
+
+### 9.4 Acceptance (extends §5)
+
+```
+Given  lock enabled and a single miss (no contention)
+When   remember() runs
+Then   the callback runs once, the entry is stored, CacheMissEvent is dispatched
+       (behaviour identical to the no-lock miss path).
+
+Given  lock enabled and, at the moment the lock is acquired, the store now
+       contains a matching entry (a concurrent leader populated it)
+When   remember() re-checks under the lock
+Then   the callback does NOT run; the cached response is returned and
+       CacheHitEvent is dispatched.
+
+Given  lock enabled but the configured lock store is unavailable or lacks
+       atomic-lock support
+When   remember() misses
+Then   it fails open: the callback runs and the response is returned, no error.
+
+Given  lock disabled (default)
+When   two concurrent identical misses occur
+Then   both may generate — unchanged v1 behaviour.
+```
+
+---
+
+## 10. Open questions / future
+
 - Multi-turn context hashing (fold a context digest into the scope or key).
 - Redis vector store driver as a second flagship.
 - Adaptive threshold tuning from observed hit/miss quality.

@@ -154,4 +154,26 @@ return [
         'avg_tokens_per_generation' => (int) env('LLM_CACHE_STATS_AVG_TOKENS', 500),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Concurrent-miss deduplication (§9)
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, a miss acquires an atomic lock keyed by sha1(scope|prompt)
+    | so concurrent identical misses generate once: the leader generates and
+    | stores; waiters block, then re-read the cache and reuse the result. The
+    | lock `store` must support atomic locks (redis, memcached, database,
+    | dynamodb, array). Fails open if the lock store is unavailable.
+    |
+    | `ttl` MUST exceed worst-case generation time. Both values are in seconds.
+    |
+    */
+
+    'lock' => [
+        'enabled' => (bool) env('LLM_CACHE_LOCK', false),
+        'store' => env('LLM_CACHE_LOCK_STORE', null),
+        'ttl' => (int) env('LLM_CACHE_LOCK_TTL', 10),
+        'wait' => (int) env('LLM_CACHE_LOCK_WAIT', 10),
+    ],
+
 ];

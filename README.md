@@ -136,6 +136,8 @@ SemanticCache::flush();                            // clear everything
 | `fail_mode` | `open` | `open` = log & run callback on cache failure; `closed` = rethrow |
 | `stats.record` | `false` | Persist Hit/Miss events for `llm-cache:stats` |
 | `stats.avg_tokens_per_generation` | `500` | Estimate basis for "tokens saved" |
+| `lock.enabled` | `false` | Dedupe concurrent identical misses (see below) |
+| `lock.ttl` / `lock.wait` | `10` / `10` | Leader hold / waiter block, in seconds |
 
 ---
 
@@ -221,6 +223,35 @@ php artisan llm-cache:stats --days=7 --json
 `estimated_tokens_saved = hits × stats.avg_tokens_per_generation` — an **estimate**
 (the package stores no real token counts; attach a downstream listener like
 `laravel-ai-budget` for precise accounting).
+
+---
+
+## Concurrent-miss deduplication (optional)
+
+Under a thundering herd — the same prompt hammered by many requests at once —
+every request misses before the first one finishes writing, so they all generate.
+Enable the lock to collapse that to a single generation:
+
+```dotenv
+LLM_CACHE_LOCK=true
+LLM_CACHE_LOCK_STORE=redis     # any cache store with atomic locks; null = default
+LLM_CACHE_LOCK_TTL=10          # seconds; MUST exceed worst-case generation time
+LLM_CACHE_LOCK_WAIT=10         # seconds a waiter blocks before failing open
+```
+
+On a miss, `remember()` takes an atomic lock keyed by `sha1(scope|prompt)`. The
+**leader** generates, stores, and releases; **waiters** block, then re-read the
+cache — which now hits — and reuse the leader's response without generating.
+
+- Dedupes **byte-identical** concurrent prompts (same `scope|prompt`).
+  Semantically-near-but-not-identical concurrent misses are still tolerated.
+- **Fails open**: if the lock store is missing, lacks atomic-lock support, or a
+  waiter exceeds `lock.wait`, the request generates without dedup — never errors.
+- `lock.ttl` must exceed your slowest generation, or a waiter could acquire the
+  lock mid-generation and generate a second time.
+
+Off by default — turn it on when duplicate-burst traffic makes double-generation
+a real cost.
 
 ---
 
@@ -331,7 +362,7 @@ skipping generation entirely.
 | Store `search` fails | Fail-open (run callback) |
 | Store `put` fails | Logged and swallowed — the response is still returned |
 | Expired entry (`expires_at` past) | Treated as a miss and refreshed |
-| Concurrent identical misses | Both may generate; last write wins (no distributed lock in v1) |
+| Concurrent identical misses | Both may generate; last write wins. Enable `lock` to dedupe (see above) |
 | Provider silently changes model | Vector-length assertion throws before storing a corrupt row |
 
 ---
