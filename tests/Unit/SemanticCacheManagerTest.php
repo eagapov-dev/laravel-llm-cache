@@ -232,6 +232,59 @@ it('resolves no expiry when config ttl is null', function () {
     expect($store->puts[0]->expiresAt)->toBeNull();
 });
 
+it('stores without expiry for a zero or malformed ttl instead of expiring instantly', function (string $ttl) {
+    // CarbonInterval::fromString("0"/"abc") yields a zero-length interval rather
+    // than throwing; a zero ttl would set expires_at ≈ now(), so the entry would
+    // be expired by the next search — writing at full cost but never hitting.
+    $provider = (new FakeEmbeddingProvider(4))->set('hi', [1.0, 0, 0, 0]);
+    $store = new FakeVectorStore(hit: null);
+    $manager = makeManager($provider, $store, ['ttl' => $ttl]);
+
+    $manager->remember('hi', fn () => 'fresh');
+
+    expect($store->puts[0]->expiresAt)->toBeNull();
+})->with(['0', 'abc', '']);
+
+it('resolves a valid ttl string to a future expiry', function () {
+    $provider = (new FakeEmbeddingProvider(4))->set('hi', [1.0, 0, 0, 0]);
+    $store = new FakeVectorStore(hit: null);
+    $manager = makeManager($provider, $store, ['ttl' => '1 hour']);
+
+    $manager->remember('hi', fn () => 'fresh');
+
+    expect($store->puts[0]->expiresAt)->not->toBeNull()
+        ->and($store->puts[0]->expiresAt->isFuture())->toBeTrue();
+});
+
+it('dispatches a miss event when the read path fails open', function () {
+    // A provider/store outage must still emit a miss so the hit rate stays
+    // truthful during the outage instead of flatlining.
+    $provider = (new FakeEmbeddingProvider(4))->set('hi', [1.0, 0, 0, 0]);
+    $store = new FakeVectorStore(hit: null);
+    $store->throwOnSearch = true;
+    $manager = makeManager($provider, $store, ['fail_mode' => 'open']);
+
+    $manager->remember('hi', fn () => 'served anyway');
+
+    Event::assertDispatched(CacheMissEvent::class);
+});
+
+it('never throws from contextScope() on a non-serializable context', function () {
+    // contextScope() runs before the fail-open try in remember(), so it must not
+    // throw even when json_encode fails and serialize() would choke on a closure.
+    $provider = new FakeEmbeddingProvider(4);
+    $store = new FakeVectorStore(hit: null);
+    $manager = makeManager($provider, $store);
+
+    $context = ['cb' => fn () => 'x'];
+
+    $scope = $manager->contextScope('user:1', $context);
+
+    expect($scope)->toStartWith('user:1#ctx:')
+        // Deterministic: the same non-serializable context yields the same digest.
+        ->and($manager->contextScope('user:1', $context))->toBe($scope);
+});
+
 it('delegates forget and flush to the store', function () {
     $provider = new FakeEmbeddingProvider(4);
     $store = new class(null) extends FakeVectorStore {

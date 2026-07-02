@@ -40,6 +40,13 @@ class SemanticCacheManager
      * Serve a cached response for a semantically-equivalent prompt, or run the
      * callback and cache its result.
      *
+     * SECURITY: $scope is the only isolation boundary. The cache returns a
+     * response generated for a *similar* prompt within the same scope, so the
+     * default 'global' scope shares cached answers across all callers — never
+     * cache anything user-specific or containing PII under 'global'. In
+     * multi-tenant / per-user contexts always pass a trusted, server-derived
+     * scope (e.g. "user:".auth()->id()), never a raw request value.
+     *
      * @param  Closure(): string        $callback The real LLM call.
      * @param  array<string, mixed>     $meta     Arbitrary caller metadata; `model` is lifted to a typed column.
      * @param  string|array<mixed>|null $context  Conversation context to isolate on (§10); folded into the scope.
@@ -283,7 +290,14 @@ class SemanticCacheManager
             $raw = json_encode($context, JSON_INVALID_UTF8_SUBSTITUTE);
 
             if ($raw === false) {
-                $raw = serialize($context);
+                // serialize() itself throws on closures/resources nested in the
+                // context array. Guard it so a non-serializable context degrades
+                // to a stable digest instead of breaking the LLM path.
+                try {
+                    $raw = serialize($context);
+                } catch (Throwable $e) {
+                    $raw = 'llm-cache:unserializable-context:'.print_r($context, true);
+                }
             }
         } else {
             $raw = $context;
@@ -312,14 +326,25 @@ class SemanticCacheManager
         // the callback has already run and the response is in hand. Degrade to
         // "no expiry" and warn rather than discarding a paid-for generation.
         try {
-            return CarbonInterval::fromString((string) $ttl);
+            $interval = CarbonInterval::fromString((string) $ttl);
         } catch (Throwable $e) {
-            Log::warning('llm-cache: invalid ttl config, storing without expiry', [
+            $interval = null;
+        }
+
+        // CarbonInterval::fromString() does NOT throw on every bad input: "0",
+        // "abc" and similar yield a zero-length interval instead. A zero ttl
+        // would set expires_at ≈ now(), so the entry is already expired by the
+        // next search() — the cache writes but never hits (0% hit rate at full
+        // generation cost, silently). Treat both cases as "no expiry".
+        if ($interval === null || $interval->isEmpty()) {
+            Log::warning('llm-cache: invalid or zero ttl config, storing without expiry', [
                 'ttl' => is_scalar($ttl) ? (string) $ttl : gettype($ttl),
             ]);
 
             return null;
         }
+
+        return $interval;
     }
 
     /**

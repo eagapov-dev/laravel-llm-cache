@@ -122,13 +122,22 @@ class RedisStore implements VectorStore
 
         $removed = 0;
 
+        // Match the exact scope plus its context-derived children
+        // ("{$scope}#ctx:<digest>", see SemanticCacheManager::contextScope) so a
+        // "clear this scope" call doesn't silently leave context-bound entries
+        // behind. The trailing `*` is a literal TAG prefix wildcard (DIALECT 2),
+        // so it must not go through escapeTag(); the digest is hex, no escaping
+        // needed. `#` and `:` in the prefix are escaped to match the stored tag.
+        $escaped = $this->escapeTag($scope);
+        $query = '(@scope:{'.$escaped.'} | @scope:{'.$escaped.'\\#ctx\\:*})';
+
         // RediSearch caps LIMIT at 10000; delete in pages until the scope is dry
         // (deleting removes docs from the index, so each pass returns the next batch).
         do {
             /** @var array<int, mixed> $reply */
             $reply = (array) $this->raw([
-                'FT.SEARCH', $this->index(), '@scope:{'.$this->escapeTag($scope).'}',
-                'NOCONTENT', 'LIMIT', '0', '10000',
+                'FT.SEARCH', $this->index(), $query,
+                'NOCONTENT', 'LIMIT', '0', '10000', 'DIALECT', '2',
             ]);
 
             $keys = array_slice($reply, 1);
@@ -299,7 +308,10 @@ class RedisStore implements VectorStore
         // break out of the tag filter across the scope boundary).
         $value = str_replace('\\', '\\\\', $value);
 
-        return preg_replace('/[,.<>{}\[\]"\':;!@#$%^&*()\-+=~| ]/', '\\\\$0', $value) ?? $value;
+        // Include `?` and all whitespace (\s covers space, tab, CR, LF, FF, VT):
+        // these are TAG token separators / wildcards in RediSearch, so an
+        // unescaped one in a scope could mis-tokenize the filter or widen a match.
+        return preg_replace('/[\s,.<>{}\[\]"\':;!@#$%^&*()\-+=~|?]/', '\\\\$0', $value) ?? $value;
     }
 
     protected function connectionName(): ?string

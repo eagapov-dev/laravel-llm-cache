@@ -100,3 +100,13 @@ it('exposes contextScope() so a caller can forget one conversation', function ()
 
     expect(SemanticCache::forget($scope))->toBe(1);
 });
+
+it('forget on the base scope also clears context-bound entries under it', function () {
+    // Data-retention expectation: clearing "user:1" must remove that user's
+    // context-bound entries too, which live under "user:1#ctx:<digest>".
+    SemanticCache::remember('and what about refunds?', fn () => 'plain', scope: 'user:1');
+    SemanticCache::remember('and what about refunds?', fn () => 'conv-1', scope: 'user:1', context: 'conversation-1');
+    SemanticCache::remember('and what about refunds?', fn () => 'conv-2', scope: 'user:1', context: 'conversation-2');
+
+    expect(SemanticCache::forget('user:1'))->toBe(3);
+});

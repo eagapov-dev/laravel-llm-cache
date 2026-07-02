@@ -69,7 +69,7 @@ class PgvectorStore implements VectorStore
             try {
                 $connection->update(
                     "UPDATE {$table} SET hits = hits + 1, updated_at = ? WHERE id = ?",
-                    [Carbon::now()->toDateTimeString(), $data['id']],
+                    [Carbon::now()->format('Y-m-d H:i:sP'), $data['id']],
                 );
             } catch (\Throwable $e) {
                 // non-essential; swallow
@@ -88,7 +88,9 @@ class PgvectorStore implements VectorStore
     {
         $connection = $this->connection();
         $table = $this->table();
-        $now = Carbon::now()->toDateTimeString();
+        // Include the UTC offset so the timestamptz columns store an unambiguous
+        // instant regardless of the DB session timezone (see the migration note).
+        $now = Carbon::now()->format('Y-m-d H:i:sP');
 
         $meta = $entry->meta === []
             ? null
@@ -106,7 +108,7 @@ class PgvectorStore implements VectorStore
                 $this->providerName,
                 $entry->model,
                 $meta,
-                $entry->expiresAt?->toDateTimeString(),
+                $entry->expiresAt?->format('Y-m-d H:i:sP'),
                 $now,
                 $now,
             ],
@@ -115,9 +117,16 @@ class PgvectorStore implements VectorStore
 
     public function forget(string $scope): int
     {
+        // Also remove context-derived child scopes ("{$scope}#ctx:<digest>", see
+        // SemanticCacheManager::contextScope) so a "clear this scope" call doesn't
+        // silently leave its context-bound entries behind — a data-retention leak.
+        // Escape LIKE wildcards in the scope itself so a scope containing % or _
+        // can't widen the match.
+        $like = str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $scope).'#ctx:%';
+
         return $this->connection()->delete(
-            "DELETE FROM {$this->table()} WHERE scope = ?",
-            [$scope],
+            "DELETE FROM {$this->table()} WHERE scope = ? OR scope LIKE ? ESCAPE '\\'",
+            [$scope, $like],
         );
     }
 

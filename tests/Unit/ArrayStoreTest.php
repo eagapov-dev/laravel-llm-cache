@@ -159,6 +159,24 @@ it('forget removes only the targeted scope and returns the count', function () {
     expect($store->entries()[0]->scope)->toBe('user:2');
 });
 
+it('forget also removes context-derived child scopes of the target', function () {
+    $store = newStore();
+
+    // Base scope plus two context-derived children (see contextScope()).
+    $store->put(new CacheEntry(vector: vec(0), response: 'base', scope: 'user:1'));
+    $store->put(new CacheEntry(vector: vec(1), response: 'ctx-a', scope: 'user:1#ctx:aaa'));
+    $store->put(new CacheEntry(vector: vec(2), response: 'ctx-b', scope: 'user:1#ctx:bbb'));
+    // A different user whose scope shares the "user:1" text as a prefix but is
+    // NOT a context child of user:1 — must survive.
+    $store->put(new CacheEntry(vector: vec(3), response: 'other', scope: 'user:12'));
+
+    $removed = $store->forget('user:1');
+
+    expect($removed)->toBe(3);
+    expect($store->entries())->toHaveCount(1);
+    expect($store->entries()[0]->scope)->toBe('user:12');
+});
+
 it('flush empties the store and returns the count', function () {
     $store = newStore();
 
