@@ -195,3 +195,90 @@ it('http provider throws on a dimension mismatch', function (): void {
 it('http name is http', function (): void {
     expect((new HttpProvider(['endpoint' => 'https://x', 'dimensions' => 1]))->name())->toBe('http');
 });
+
+// ---------------------------------------------------------------------------
+// HttpProvider — endpoint guards and error paths
+// ---------------------------------------------------------------------------
+
+it('http provider rejects a non-HTTPS endpoint', function (): void {
+    Http::fake();
+
+    $provider = new HttpProvider(['endpoint' => 'http://embeddings.local/embed', 'dimensions' => 4]);
+
+    expect(fn () => $provider->embed('x'))
+        ->toThrow(RuntimeException::class, 'must use HTTPS');
+
+    // The guard fires before any request goes out.
+    Http::assertNothingSent();
+});
+
+it('http provider rejects an empty or missing endpoint', function (): void {
+    Http::fake();
+
+    expect(fn () => (new HttpProvider(['endpoint' => '', 'dimensions' => 4]))->embed('x'))
+        ->toThrow(RuntimeException::class, 'non-empty "endpoint"');
+
+    expect(fn () => (new HttpProvider(['dimensions' => 4]))->embed('x'))
+        ->toThrow(RuntimeException::class, 'non-empty "endpoint"');
+
+    Http::assertNothingSent();
+});
+
+it('http provider accepts an uppercase HTTPS scheme', function (): void {
+    Http::fake(['*' => Http::response(['embedding' => [0.1, 0.2]])]);
+
+    $provider = new HttpProvider(['endpoint' => 'HTTPS://embeddings.local/embed', 'dimensions' => 2]);
+
+    expect($provider->embed('x'))->toBe([0.1, 0.2]);
+});
+
+it('http provider throws on a failed (non-2xx) response', function (): void {
+    Http::fake(['*' => Http::response(['error' => 'boom'], 500)]);
+
+    $provider = new HttpProvider(['endpoint' => 'https://x/embed', 'dimensions' => 4, 'retries' => 0]);
+
+    expect(fn () => $provider->embed('x'))
+        ->toThrow(RuntimeException::class, 'status 500');
+});
+
+it('http provider throws when the response has no embedding/data vector', function (): void {
+    Http::fake(['*' => Http::response(['unexpected' => true])]);
+
+    $provider = new HttpProvider(['endpoint' => 'https://x/embed', 'dimensions' => 4, 'retries' => 0]);
+
+    expect(fn () => $provider->embed('x'))
+        ->toThrow(RuntimeException::class, 'did not contain');
+});
+
+// ---------------------------------------------------------------------------
+// Bearer providers — error paths (OpenAI stands in for the shared base)
+// ---------------------------------------------------------------------------
+
+it('bearer provider throws on a failed (non-2xx) response', function (): void {
+    Http::fake(['api.openai.com/*' => Http::response(['error' => 'unauthorized'], 401)]);
+
+    $provider = new OpenAiProvider(['key' => 'sk-bad', 'model' => 'text-embedding-3-small', 'retries' => 0]);
+
+    expect(fn () => $provider->embed('x'))
+        ->toThrow(RuntimeException::class, 'status 401');
+});
+
+it('bearer provider throws when data.0.embedding is missing', function (): void {
+    Http::fake(['api.openai.com/*' => Http::response(['data' => []])]);
+
+    $provider = new OpenAiProvider(['key' => 'sk-test', 'model' => 'text-embedding-3-small', 'retries' => 0]);
+
+    expect(fn () => $provider->embed('x'))
+        ->toThrow(RuntimeException::class, 'data.0.embedding');
+});
+
+it('bearer provider throws when the model returns a wrongly-sized vector', function (): void {
+    // 2 dims returned but text-embedding-3-small is 1536 — a silently switched
+    // model must be rejected before it corrupts the store (§6).
+    Http::fake(['api.openai.com/*' => Http::response(['data' => [['embedding' => [0.1, 0.2]]]])]);
+
+    $provider = new OpenAiProvider(['key' => 'sk-test', 'model' => 'text-embedding-3-small', 'retries' => 0]);
+
+    expect(fn () => $provider->embed('x'))
+        ->toThrow(RuntimeException::class, '1536 was expected');
+});

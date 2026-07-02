@@ -193,3 +193,26 @@ it('throws on a dimension mismatch', function () {
 
     $store->search(array_fill(0, 8, 0.1), 'global', 0.95);
 })->throws(DimensionMismatchException::class);
+
+it('purgeExpired physically removes only past-expiry entries and returns the count', function () {
+    $store = newStore();
+
+    $store->put(new CacheEntry(vector: vec(0), response: 'stale', scope: 'global', expiresAt: CarbonImmutable::now()->subMinute()));
+    $store->put(new CacheEntry(vector: vec(1), response: 'fresh', scope: 'global', expiresAt: CarbonImmutable::now()->addMinute()));
+    $store->put(new CacheEntry(vector: vec(2), response: 'no-expiry', scope: 'global'));
+
+    $removed = $store->purgeExpired();
+
+    expect($removed)->toBe(1);
+    expect($store->entries())->toHaveCount(2);
+    expect(array_map(fn ($e) => $e->response, $store->entries()))->toBe(['fresh', 'no-expiry']);
+});
+
+it('purgeExpired returns zero when nothing has expired', function () {
+    $store = newStore();
+
+    $store->put(new CacheEntry(vector: vec(0), response: 'fresh', scope: 'global', expiresAt: CarbonImmutable::now()->addMinute()));
+
+    expect($store->purgeExpired())->toBe(0);
+    expect($store->entries())->toHaveCount(1);
+});
