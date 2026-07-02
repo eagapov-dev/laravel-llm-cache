@@ -44,8 +44,12 @@ return new class extends Migration
             $blueprint->string('model')->nullable();
             $blueprint->jsonb('meta')->nullable();
             $blueprint->integer('hits')->default(0);
-            $blueprint->timestamp('expires_at')->nullable()->index();
-            $blueprint->timestamps();
+            // timestamptz (not plain timestamp): expires_at is compared against
+            // SQL now() in every search/purge. A timezone-naive column would be
+            // read in the DB session's timezone, so an app/DB timezone mismatch
+            // would shift expiry by whole hours (entries expiring early or late).
+            $blueprint->timestampTz('expires_at')->nullable()->index();
+            $blueprint->timestampsTz();
         });
 
         // Vector column — no schema-builder equivalent.
@@ -92,7 +96,15 @@ return new class extends Migration
     private function table(): string
     {
         $table = config('llm-cache.stores.pgvector.table');
+        $table = is_string($table) ? $table : 'llm_cache_entries';
 
-        return is_string($table) ? $table : 'llm_cache_entries';
+        // This name is interpolated into raw ALTER/CREATE INDEX statements below
+        // (identifiers can't be bound), so constrain it to a safe identifier
+        // shape — matching the guard in PgvectorStore::table().
+        if (! preg_match('/^[A-Za-z0-9_]+$/', $table)) {
+            throw new InvalidArgumentException("Invalid llm-cache table name [{$table}].");
+        }
+
+        return $table;
     }
 };

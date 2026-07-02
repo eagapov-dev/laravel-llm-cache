@@ -87,11 +87,15 @@ class ArrayStore implements VectorStore
 
     public function forget(string $scope): int
     {
+        // Also remove context-derived child scopes ("{$scope}#ctx:<digest>", see
+        // SemanticCacheManager::contextScope) so a "clear this scope" call doesn't
+        // silently leave its context-bound entries behind — a data-retention leak.
+        $prefix = $scope.'#ctx:';
         $remaining = [];
         $removed = 0;
 
         foreach ($this->entries as $entry) {
-            if ($entry->scope === $scope) {
+            if ($entry->scope === $scope || str_starts_with($entry->scope, $prefix)) {
                 $removed++;
 
                 continue;
