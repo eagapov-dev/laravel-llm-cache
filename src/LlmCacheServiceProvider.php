@@ -7,6 +7,7 @@ use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
+use Yegoragapov\LlmCache\Console\CalibrateCommand;
 use Yegoragapov\LlmCache\Console\PruneCommand;
 use Yegoragapov\LlmCache\Console\StatsCommand;
 use Yegoragapov\LlmCache\Contracts\EmbeddingProvider;
@@ -165,7 +166,7 @@ class LlmCacheServiceProvider extends ServiceProvider
                 __DIR__.'/../database/migrations' => database_path('migrations'),
             ], 'llm-cache-migrations');
 
-            $this->commands([StatsCommand::class, PruneCommand::class]);
+            $this->commands([StatsCommand::class, PruneCommand::class, CalibrateCommand::class]);
         }
 
         $this->guardDimension();
