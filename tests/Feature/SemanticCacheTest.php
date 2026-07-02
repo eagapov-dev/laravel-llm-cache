@@ -211,6 +211,31 @@ it('forgets only the targeted scope and returns the removed count', function (st
     expect($calls)->toBe(0);
 })->with('stores');
 
+it('forget on a base scope also removes its context-derived children, but not a prefix-adjacent scope', function (string $store) {
+    useStore($store);
+
+    // Base entry plus two context-bound children under user:1
+    // ("user:1#ctx:<digest>"), and a different user whose scope merely shares
+    // the "user:1" text as a prefix — it must survive.
+    SemanticCache::remember('what are your opening hours?', fn () => 'base', scope: 'user:1');
+    SemanticCache::remember('what are your opening hours?', fn () => 'c1', scope: 'user:1', context: 'conversation-1');
+    SemanticCache::remember('what are your opening hours?', fn () => 'c2', scope: 'user:1', context: 'conversation-2');
+    SemanticCache::remember('what are your opening hours?', fn () => 'other', scope: 'user:12');
+
+    $removed = SemanticCache::forget('user:1');
+    expect($removed)->toBe(3);
+
+    // user:12 is untouched -> still a hit (callback not run).
+    $calls = 0;
+    SemanticCache::remember('what are your opening hours?', function () use (&$calls) {
+        $calls++;
+
+        return 'regenerated';
+    }, scope: 'user:12');
+
+    expect($calls)->toBe(0);
+})->with('stores');
+
 /**
  * Read the `hits` counter of the first stored entry. Requires a per-driver
  * test affordance: ArrayStore::entries() and, for pgvector, the DB row.
